@@ -85,6 +85,7 @@ async def _fetch_page(
     params = {"q": query, "page": page}
 
     async def _do() -> Dict[str, Any]:
+        logger.debug("GET shufersal page=%d q='%s'", page, query)
         async with session.get(
             SHUFERSAL_SEARCH_URL, params=params, headers=_build_headers()
         ) as resp:
@@ -95,7 +96,11 @@ async def _fetch_page(
                     status=resp.status,
                     message=f"HTTP {resp.status}",
                 )
-            return await resp.json(content_type=None)
+            data = await resp.json(content_type=None)
+            n = len(data.get("results", []))
+            total = (data.get("pagination") or {}).get("totalNumberOfResults", "?")
+            logger.debug("  → shufersal page=%d: %d items (total=%s)", page, n, total)
+            return data
 
     try:
         return await with_retry(
@@ -446,6 +451,14 @@ async def scrape(
             chunk_size = max_concurrent
             for chunk_start in range(0, len(task_fns), chunk_size):
                 chunk = task_fns[chunk_start : chunk_start + chunk_size]
+                pages_in_chunk = remaining_pages[chunk_start : chunk_start + chunk_size]
+                logger.debug(
+                    "Shufersal: fetching pages %d–%d (chunk %d/%d)…",
+                    pages_in_chunk[0],
+                    pages_in_chunk[-1],
+                    chunk_start // chunk_size + 1,
+                    (len(task_fns) + chunk_size - 1) // chunk_size,
+                )
                 results = await run_concurrently(chunk, max_concurrent=chunk_size)
                 for r in results:
                     if isinstance(r, Exception):
@@ -453,6 +466,10 @@ async def scrape(
                         logger.error("Page fetch error: %s", r)
                     elif r:
                         all_products.extend(r)
+                logger.debug(
+                    "Shufersal: chunk done — running total %d products",
+                    len(all_products),
+                )
                 if chunk_start + chunk_size < len(task_fns):
                     await asyncio.sleep(random.uniform(0.3, 1.0))
 

@@ -169,6 +169,7 @@ async def _fetch_page(
     headers = get_browser_headers(BASE_URL)
 
     async def _do() -> Dict[str, Any]:
+        logger.debug("GET %s", label or full_url)
         async with session.get(full_url, headers=headers) as resp:
             if resp.status != 200:
                 raise aiohttp.ClientResponseError(
@@ -177,7 +178,11 @@ async def _fetch_page(
                     status=resp.status,
                     message=f"HTTP {resp.status}",
                 )
-            return await resp.json()
+            data = await resp.json()
+            total = data.get("total", "?")
+            n = len(data.get("products", []))
+            logger.debug("  → %s: %s total, %d items in page", label or "?", total, n)
+            return data
 
     try:
         return await with_retry(
@@ -376,6 +381,13 @@ def _to_unified(
                 if qty_req and deal_total:
                     qty_req = int(qty_req)
                     deal_total = float(deal_total)
+                    if qty_req <= 0:
+                        logger.debug(
+                            "branch=%s: skipping multi_buy special with qty_req=%s (rounds to 0)",
+                            branch["id"],
+                            fl.get("firstPurchaseTotal"),
+                        )
+                        continue
                     per_unit = round(deal_total / qty_req, 4)
                     ppbu_deal = compute_price_per_base_unit(
                         per_unit, qty_si, dimension, is_weighable
@@ -476,10 +488,20 @@ async def _scrape_category(
         items = data.get("products", [])
         if not items:
             break
+        before = len(products)
         for item in items:
             p = _to_unified(item, branch, category_id, scraped_at)
             if p:
                 products.append(p)
+        logger.debug(
+            "branch=%s cat=%s offset=%d — parsed %d/%d products (running total: %d)",
+            branch_id,
+            category_id,
+            offset,
+            len(products) - before,
+            len(items),
+            len(products),
+        )
         offset += batch_size
 
     return products
@@ -511,6 +533,14 @@ async def _scrape_search(
     branch_id = branch["id"]
     encoded_q = quote(name_query)
 
+    logger.info(
+        "branch=%s: searching '%s' across %d categories (max_concurrent=%d)…",
+        branch_id,
+        name_query,
+        len(categories),
+        max_concurrent,
+    )
+
     async def _search_category(cat: str) -> List[UnifiedProduct]:
         url = _products_url(branch_id, cat)
         probe = await _fetch_page(
@@ -523,7 +553,17 @@ async def _scrape_search(
         )
         total = probe.get("total", 0)
         if total == 0:
+            logger.debug(
+                "branch=%s cat=%s search='%s': 0 hits — skip",
+                branch_id,
+                cat,
+                name_query,
+            )
             return []
+
+        logger.debug(
+            "branch=%s cat=%s search='%s': %d hits", branch_id, cat, name_query, total
+        )
 
         cat_products: List[UnifiedProduct] = []
         offset = 0
@@ -539,10 +579,19 @@ async def _scrape_search(
             items = data.get("products", [])
             if not items:
                 break
+            before = len(cat_products)
             for item in items:
                 p = _to_unified(item, branch, cat, scraped_at)
                 if p:
                     cat_products.append(p)
+            logger.debug(
+                "branch=%s cat=%s search offset=%d — parsed %d/%d products",
+                branch_id,
+                cat,
+                offset,
+                len(cat_products) - before,
+                len(items),
+            )
             offset += batch_size
         return cat_products
 
@@ -550,17 +599,20 @@ async def _scrape_search(
     results = await run_concurrently(task_fns, max_concurrent=max_concurrent)
 
     all_products: List[UnifiedProduct] = []
+    cats_with_hits = 0
     for r in results:
         if isinstance(r, Exception):
             logger.warning("Search category error branch=%s: %s", branch_id, r)
         elif r:
             all_products.extend(r)
+            cats_with_hits += 1
 
     logger.info(
-        "branch=%s search='%s' — %d raw hits across %d categories",
+        "branch=%s search='%s' — %d raw hits across %d/%d categories",
         branch_id,
         name_query,
         len(all_products),
+        cats_with_hits,
         len(categories),
     )
     return all_products

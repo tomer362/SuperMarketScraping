@@ -104,6 +104,47 @@ CHAIN = "chp"
 # also carry random data-* attribute names to defeat simple CSS selectors.
 _ZERO_WIDTH_RE = re.compile(r"[\u200b\u200c\u200d\ufeff\u200e\u200f]")
 
+
+def _is_obfuscated_html(html: str) -> bool:
+    """Return True if the compare_results response is obfuscated by the server.
+
+    The server's bot-detection injects thousands of zero-width Unicode
+    characters (U+200B … U+200F, U+FEFF) throughout obfuscated HTML, producing
+    pages that are 500 KB – 2 MB instead of the expected 5–150 KB.
+
+    Detection strategy (two independent signals, either alone is sufficient):
+
+    1. **Zero-width character count** — a legitimate compare_results page has at
+       most a handful; an obfuscated one has thousands.  Threshold: > 200.
+    2. **DOM structure absent** — if the HTML is suspiciously large (> 150 KB)
+       *and* contains no ``<table class="results-table">`` elements, the
+       page is obfuscated (a real response always has at least the surrounding
+       page structure even when no stores carry the product).
+
+    Using these two signals rather than a raw byte-size threshold avoids both
+    false positives (a legitimate page that happens to be large) and false
+    negatives (a cleverly-sized obfuscated page).
+    """
+    # Signal 1: zero-width character saturation (fast string scan)
+    zwc_count = len(_ZERO_WIDTH_RE.findall(html))
+    if zwc_count > 200:
+        logger.debug("Obfuscation signal: %d zero-width chars detected", zwc_count)
+        return True
+
+    # Signal 2: large response with no expected DOM structure
+    if len(html) > 150_000:
+        from bs4 import BeautifulSoup as _BS
+
+        soup = _BS(html, "html.parser")
+        if not soup.find("table", class_="results-table"):
+            logger.debug(
+                "Obfuscation signal: %d bytes, no results-table found", len(html)
+            )
+            return True
+
+    return False
+
+
 # Headers for autocomplete/JSON API calls (used by search & city endpoints).
 _HEADERS = {
     "User-Agent": (
@@ -784,15 +825,14 @@ async def fetch_compare_results(
                     await asyncio.sleep(retry_delay + random.uniform(0, 2.0))
                 continue
 
-        # Obfuscated responses are ~10-20× larger than clean ones.
-        # A clean response for a popular product is typically 40-150 KB;
-        # an obfuscated one is 500 KB – 2 MB.
-        if len(html) > 200_000:
+        # Detect obfuscated response (injected zero-width chars or wrong DOM structure).
+        if _is_obfuscated_html(html):
             logger.warning(
-                "Obfuscated response for %s (%d bytes); "
+                "Obfuscated response for %s (%d bytes, %d zero-width chars); "
                 "retrying with fresh session (attempt %d/%d)",
                 product.product_id,
                 len(html),
+                len(_ZERO_WIDTH_RE.findall(html)),
                 attempt + 1,
                 max_retries,
             )
