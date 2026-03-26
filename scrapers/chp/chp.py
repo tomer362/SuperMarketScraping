@@ -104,15 +104,63 @@ CHAIN = "chp"
 # also carry random data-* attribute names to defeat simple CSS selectors.
 _ZERO_WIDTH_RE = re.compile(r"[\u200b\u200c\u200d\ufeff\u200e\u200f]")
 
+# Headers for autocomplete/JSON API calls (used by search & city endpoints).
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+        "Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json, text/html, */*; q=0.01",
     "X-Requested-With": "XMLHttpRequest",
     "Referer": "https://chp.co.il/",
+}
+
+# Headers that mimic a real browser navigating to the homepage.
+# chp.co.il sets an httpOnly `us` cookie on every page response; we must
+# visit the homepage first so the session carries `us` when compare_results
+# is fetched.  Sending X-Requested-With or XHR Accept headers when the
+# `us` cookie is already present triggers server-side obfuscation.
+_HEADERS_NAV_HOME = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+}
+
+# Headers that mimic a real browser navigating from the homepage to an inner
+# page (compare_results). Critically: no X-Requested-With (not XHR).
+_HEADERS_NAV_COMPARE = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Upgrade-Insecure-Requests": "1",
+    "Referer": "https://chp.co.il/",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
+    "Cache-Control": "max-age=0",
 }
 
 _PAGE_SIZE = 10  # items per autocomplete page (excluding "prev" sentinel)
@@ -328,8 +376,25 @@ async def _get_text(
     session: aiohttp.ClientSession,
     url: str,
 ) -> str:
-    """GET text/HTML from URL with shared headers."""
+    """GET text/HTML from URL with shared XHR headers (used for autocomplete)."""
     async with session.get(url, headers=_HEADERS, ssl=make_ssl_context()) as resp:
+        resp.raise_for_status()
+        return await resp.text()
+
+
+async def _get_compare_html(
+    session: aiohttp.ClientSession,
+    url: str,
+    ssl_ctx,
+) -> str:
+    """GET the compare_results HTML using browser navigate headers (not XHR).
+
+    chp.co.il obfuscates responses when ``X-Requested-With: XMLHttpRequest``
+    is present and the session already carries a ``us`` cookie.  Using browser
+    navigation headers (``Sec-Fetch-Mode: navigate``, no ``X-Requested-With``)
+    makes the request indistinguishable from a real browser page load.
+    """
+    async with session.get(url, headers=_HEADERS_NAV_COMPARE, ssl=ssl_ctx) as resp:
         resp.raise_for_status()
         return await resp.text()
 
@@ -622,17 +687,46 @@ async def fetch_compare_results(
 ) -> Tuple[List[OnlineStorePrice], List[OnlineStorePrice]]:
     """Fetch and parse compare results for a single product + city.
 
-    Uses a fresh ``aiohttp.ClientSession`` per call to avoid bot-detection by
-    chp.co.il, which returns obfuscated HTML (with zero-width Unicode and
-    interleaved digit spans) when it detects concurrent requests from the same
-    TCP connection.  If an obfuscated response is detected (HTML > 200 KB),
-    the call is retried after ``retry_delay`` seconds with a new session and
-    a fresh ``u`` value.
+    **Bot-detection mitigation** — chp.co.il uses two interlocking signals to
+    decide whether to obfuscate the response HTML:
+
+    1. **The ``us`` cookie** — an httpOnly cookie set by the server on every
+       response.  Once a session carries ``us``, making additional requests in
+       that session triggers obfuscation if the requests look automated.
+
+    2. **XHR headers** (``X-Requested-With: XMLHttpRequest``) — if the session
+       has a ``us`` cookie and the request headers signal an XHR call rather than
+       a real browser page-navigation, the server obfuscates the response.
+
+    **Solution** — for every attempt we create a fresh ``aiohttp.ClientSession``
+    (fresh cookie jar), then:
+
+    a. ``GET /`` with browser *navigation* headers → server sets ``us`` cookie.
+    b. ``GET /main_page/compare_results`` with browser *navigation* headers and
+       the ``Referer: https://chp.co.il/`` header → server sees a normal
+       same-origin page navigation from a legitimate browser session and returns
+       clean HTML.
+
+    If the response is still obfuscated (>200 KB), we wait ``retry_delay``
+    seconds and retry with a completely new session.  Raises ``RuntimeError``
+    when all retries are exhausted so the caller can record the failure
+    (zero silent data loss).
+
+    Args:
+        session:     Outer session (used by the caller for autocomplete calls).
+                     **Not used here** — we always create our own fresh session.
+        product:     Product to look up.
+        city:        City for location-aware pricing.
+        u:           Session ``u`` float (not sent to compare_results; kept for
+                     API compatibility).
+        max_retries: Maximum attempts before raising.
+        retry_delay: Base delay in seconds between retries (jitter added).
 
     Returns:
-        (physical_prices, online_prices)
+        (physical_prices, online_prices) — both lists may be empty if the
+        product is not carried by any store.
     """
-    url = (
+    compare_url = (
         f"{BASE_URL}/main_page/compare_results"
         f"?shopping_address={quote(city.label)}"
         f"&shopping_address_street_id={city.street_id}"
@@ -646,24 +740,59 @@ async def fetch_compare_results(
     ssl_ctx = make_ssl_context()
 
     for attempt in range(max_retries):
-        fresh_u = _new_u()
-        connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=5)
+        connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=3)
         async with aiohttp.ClientSession(connector=connector) as fresh_session:
-            html = await with_retry(
-                lambda: _get_text(fresh_session, url),
-                label=f"compare:{product.product_id}",
-            )
+            # Step 1: Visit the homepage so the server sets the `us` cookie.
+            # This makes the subsequent compare_results request look like a
+            # real browser navigating from the homepage to an inner page.
+            try:
+                async with fresh_session.get(
+                    BASE_URL,
+                    headers=_HEADERS_NAV_HOME,
+                    ssl=ssl_ctx,
+                ) as resp:
+                    await resp.read()  # consume body, not needed
+                    logger.debug(
+                        "Homepage warmup: status=%s, cookies=%s",
+                        resp.status,
+                        list(fresh_session.cookie_jar._cookies.keys())
+                        if hasattr(fresh_session.cookie_jar, "_cookies")
+                        else "?",
+                    )
+            except Exception as exc:
+                logger.debug("Homepage warmup failed (non-fatal): %s", exc)
+                # Continue anyway — a cold session can still get clean HTML
+
+            # Step 2: Fetch compare results using browser navigation headers.
+            # The fresh session now carries the `us` cookie from the homepage,
+            # and we use navigate (not XHR) headers so the server doesn't flag
+            # this as an automated request.
+            try:
+                html = await with_retry(
+                    lambda: _get_compare_html(fresh_session, compare_url, ssl_ctx),
+                    label=f"compare:{product.product_id}",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "compare_results network error for %s (attempt %d/%d): %s",
+                    product.product_id,
+                    attempt + 1,
+                    max_retries,
+                    exc,
+                )
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay + random.uniform(0, 2.0))
+                continue
 
         # Obfuscated responses are ~10-20× larger than clean ones.
         # A clean response for a popular product is typically 40-150 KB;
         # an obfuscated one is 500 KB – 2 MB.
         if len(html) > 200_000:
             logger.warning(
-                "Obfuscated response detected for %s (%d bytes); "
-                "retrying after %.1fs (attempt %d/%d)",
+                "Obfuscated response for %s (%d bytes); "
+                "retrying with fresh session (attempt %d/%d)",
                 product.product_id,
                 len(html),
-                retry_delay,
                 attempt + 1,
                 max_retries,
             )

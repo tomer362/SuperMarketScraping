@@ -116,9 +116,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--max-concurrent",
         type=int,
-        default=3,
+        default=1,
         metavar="N",
-        help="Concurrent compare_results requests (default: 3, keep low to avoid 503)",
+        help="Concurrent compare_results requests (default: 1; keep at 1 — parallel requests trigger server bot-detection)",
     )
 
     # Output
