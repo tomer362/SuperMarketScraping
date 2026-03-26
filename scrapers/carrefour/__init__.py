@@ -1,0 +1,1 @@
+# Carrefour Israel scraper package
