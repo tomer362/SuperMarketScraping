@@ -1347,37 +1347,35 @@ class TestUnifiedProductSchema(unittest.TestCase):
 
     def test_machsanei_product_schema(self):
         from scrapers.machsanei_hashook.machsanei_hashook import (
-            ONLINE_BRANCHES,
             _to_unified,
         )
 
-        branch = ONLINE_BRANCHES[2]  # באר שבע, id=836
         item = {
             "id": 20164375,
             "productId": 6080688,
-            "barcode": "7290000066882",
-            "localBarcode": "7290000066882",
             "localName": "חלב",
             "names": {"1": {"short": "חלב", "long": "חלב תנובה 3%"}},
             "isWeighable": False,
             "weight": 1000,
             "unitOfMeasure": {"names": {"1": 'מ"ל'}},
             "numberOfItems": 1,
-            "department": {"id": 13292, "name": "מוצרי חלב"},
-            "image": {"url": "https://cdn.example.com/products/img.jpg"},
-            "branches": {
-                "836": {
-                    "id": 836,
-                    "isActive": True,
-                    "isVisible": True,
-                    "regularPrice": 6.90,
-                    "salePrice": None,
-                    "isOutOfStock": False,
-                    "specials": [],
-                }
+            "family": {
+                "categories": [{"id": 13292, "names": {"1": {"name": "מוצרי חלב"}}}]
+            },
+            "image": {
+                "url": "https://htmlcache.blob.core.windows.net/gs1-products/1107/{{size}}/7290000066882-1.jpg"
+            },
+            "branch": {
+                "id": 836,
+                "isActive": True,
+                "isVisible": True,
+                "regularPrice": 6.90,
+                "salePrice": None,
+                "isOutOfStock": False,
+                "specials": [],
             },
         }
-        p = _to_unified(item, branch, "2026-03-25T10:00:00+00:00")
+        p = _to_unified(item, "2026-03-25T10:00:00+00:00")
         self._check_product(p, "machsanei")
 
     def test_ramilevi_product_schema(self):
@@ -1426,169 +1424,170 @@ class TestUnifiedProductSchema(unittest.TestCase):
 class TestMachsaneiExtraction(unittest.TestCase):
     def setUp(self):
         from scrapers.machsanei_hashook.machsanei_hashook import (
-            ONLINE_BRANCHES,
             _to_unified,
             _extract_deal,
         )
 
         self._to_unified = _to_unified
         self._extract_deal = _extract_deal
-        self._branch = ONLINE_BRANCHES[2]  # באר שבע, id=836
         self._scraped_at = "2026-03-25T10:00:00+00:00"
 
     def _make_item(self, **overrides) -> dict:
         item = {
             "id": 20164375,
             "productId": 6080688,
-            "barcode": "7290000066882",
-            "localBarcode": "7290000066882",
             "localName": "חלב",
             "names": {"1": {"short": "חלב", "long": "חלב תנובה 3%"}},
             "isWeighable": False,
             "weight": 1000,
             "unitOfMeasure": {"names": {"1": 'מ"ל'}},
             "numberOfItems": 1,
-            "department": {"id": 13292, "name": "מוצרי חלב"},
-            "image": {"url": "https://cdn.example.com/products/img.jpg"},
-            "branches": {
-                "836": {
-                    "id": 836,
-                    "isActive": True,
-                    "isVisible": True,
-                    "regularPrice": 6.90,
-                    "salePrice": None,
-                    "isOutOfStock": False,
-                    "specials": [],
-                }
+            "family": {
+                "categories": [{"id": 13292, "names": {"1": {"name": "מוצרי חלב"}}}]
+            },
+            "image": {
+                "url": "https://htmlcache.blob.core.windows.net/gs1-products/1107/{{size}}/7290000066882-1.jpg"
+            },
+            "branch": {
+                "id": 836,
+                "isActive": True,
+                "isVisible": True,
+                "regularPrice": 6.90,
+                "salePrice": None,
+                "isOutOfStock": False,
+                "specials": [],
             },
         }
         item.update(overrides)
         return item
 
     def test_chain_is_machsanei(self):
-        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        p = self._to_unified(self._make_item(), self._scraped_at)
         self.assertIsNotNone(p)
         self.assertEqual(p["chain"], "machsanei")
 
     def test_store_id_is_branch_id(self):
-        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        p = self._to_unified(self._make_item(), self._scraped_at)
         self.assertEqual(p["store_id"], "836")
 
     def test_store_name_is_branch_name(self):
-        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
-        self.assertEqual(p["store_name"], "באר שבע")
+        p = self._to_unified(self._make_item(), self._scraped_at)
+        self.assertEqual(p["store_name"], "מחסני השוק")
 
-    def test_barcode_from_top_level_field(self):
-        """Barcode comes from top-level barcode field, not image URL."""
-        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+    def test_barcode_extracted_from_image_url(self):
+        """Barcode is extracted from the image URL (not a top-level field)."""
+        p = self._to_unified(self._make_item(), self._scraped_at)
         self.assertEqual(p["barcode"], "7290000066882")
 
-    def test_barcode_fallback_to_local_barcode(self):
+    def test_barcode_none_when_no_barcode_in_url(self):
+        """Image URL with no recognisable barcode → barcode is None."""
         item = self._make_item()
-        del item["barcode"]
-        item["localBarcode"] = "1234567890123"
-        p = self._to_unified(item, self._branch, self._scraped_at)
-        self.assertEqual(p["barcode"], "1234567890123")
+        item["image"] = {"url": "https://cdn.example.com/products/nobarcode.jpg"}
+        p = self._to_unified(item, self._scraped_at)
+        self.assertIsNone(p["barcode"])
 
-    def test_image_url_is_direct(self):
-        """Image URL is used as-is — no template expansion."""
-        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
-        self.assertEqual(p["image_url"], "https://cdn.example.com/products/img.jpg")
+    def test_image_url_template_expanded(self):
+        """{{size}} and {{extension||'jpg'}} placeholders are replaced."""
+        p = self._to_unified(self._make_item(), self._scraped_at)
+        self.assertIsNotNone(p["image_url"])
+        self.assertNotIn("{{size}}", p["image_url"])
+        self.assertNotIn("{{extension", p["image_url"])
+        self.assertIn("large", p["image_url"])
 
-    def test_category_from_department(self):
-        """Category IDs come from product['department']['id']."""
-        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+    def test_category_from_family_categories(self):
+        """Category IDs come from product['family']['categories'][*]['id']."""
+        p = self._to_unified(self._make_item(), self._scraped_at)
         self.assertIn("13292", p["category_ids"])
 
-    def test_no_category_when_no_department(self):
+    def test_no_category_when_no_family(self):
         item = self._make_item()
-        del item["department"]
-        p = self._to_unified(item, self._branch, self._scraped_at)
+        del item["family"]
+        p = self._to_unified(item, self._scraped_at)
         self.assertEqual(p["category_ids"], [])
 
     def test_regular_price_mapped(self):
-        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        p = self._to_unified(self._make_item(), self._scraped_at)
         self.assertAlmostEqual(p["regular_price"], 6.90)
         self.assertAlmostEqual(p["price"], 6.90)
         self.assertIsNone(p["sale_price"])
 
     def test_sale_price_mapped(self):
         item = self._make_item()
-        item["branches"]["836"]["salePrice"] = 5.50
-        p = self._to_unified(item, self._branch, self._scraped_at)
+        item["branch"]["salePrice"] = 5.50
+        p = self._to_unified(item, self._scraped_at)
         self.assertAlmostEqual(p["price"], 5.50)
         self.assertAlmostEqual(p["sale_price"], 5.50)
         self.assertAlmostEqual(p["regular_price"], 6.90)
 
     def test_discount_percent_calculated(self):
         item = self._make_item()
-        item["branches"]["836"]["salePrice"] = 5.50
-        p = self._to_unified(item, self._branch, self._scraped_at)
+        item["branch"]["salePrice"] = 5.50
+        p = self._to_unified(item, self._scraped_at)
         self.assertIsNotNone(p["discount_percent"])
         self.assertGreater(p["discount_percent"], 0)
 
     def test_inactive_branch_returns_none(self):
         item = self._make_item()
-        item["branches"]["836"]["isActive"] = False
-        p = self._to_unified(item, self._branch, self._scraped_at)
+        item["branch"]["isActive"] = False
+        p = self._to_unified(item, self._scraped_at)
         self.assertIsNone(p)
 
     def test_invisible_branch_returns_none(self):
         item = self._make_item()
-        item["branches"]["836"]["isVisible"] = False
-        p = self._to_unified(item, self._branch, self._scraped_at)
+        item["branch"]["isVisible"] = False
+        p = self._to_unified(item, self._scraped_at)
         self.assertIsNone(p)
 
     def test_missing_branch_returns_none(self):
-        """Product not stocked in this branch → None."""
+        """No branch key at all → None."""
         item = self._make_item()
-        item["branches"] = {}  # no entry for branch 836
-        p = self._to_unified(item, self._branch, self._scraped_at)
+        del item["branch"]
+        p = self._to_unified(item, self._scraped_at)
         self.assertIsNone(p)
 
     def test_zero_price_returns_none(self):
         item = self._make_item()
-        item["branches"]["836"]["regularPrice"] = 0
-        p = self._to_unified(item, self._branch, self._scraped_at)
+        item["branch"]["regularPrice"] = 0
+        p = self._to_unified(item, self._scraped_at)
         self.assertIsNone(p)
 
     def test_no_price_returns_none(self):
         item = self._make_item()
-        item["branches"]["836"]["regularPrice"] = None
-        p = self._to_unified(item, self._branch, self._scraped_at)
+        item["branch"]["regularPrice"] = None
+        p = self._to_unified(item, self._scraped_at)
         self.assertIsNone(p)
 
     def test_unit_dimension_volume(self):
         """1000 מ\"ל → dimension=volume, qty_si=1000."""
-        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        p = self._to_unified(self._make_item(), self._scraped_at)
         self.assertEqual(p["unit_dimension"], "volume")
         self.assertAlmostEqual(p["unit_qty_si"], 1000.0)
 
     def test_price_per_base_unit_volume(self):
         """6.90 for 1000ml → 0.69 per 100ml."""
-        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        p = self._to_unified(self._make_item(), self._scraped_at)
         self.assertIsNotNone(p["price_per_base_unit"])
         self.assertAlmostEqual(p["price_per_base_unit"], 0.69, places=3)
 
     def test_name_prefers_long(self):
-        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        p = self._to_unified(self._make_item(), self._scraped_at)
         self.assertEqual(p["name"], "חלב תנובה 3%")
 
     def test_name_fallback_to_local_name(self):
         item = self._make_item()
         del item["names"]
-        p = self._to_unified(item, self._branch, self._scraped_at)
+        p = self._to_unified(item, self._scraped_at)
         self.assertEqual(p["name"], "חלב")
 
     def test_deal_none_when_no_sale_no_specials(self):
-        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        p = self._to_unified(self._make_item(), self._scraped_at)
         self.assertIsNone(p["deal"])
 
     def test_deal_price_reduction_from_sale_price(self):
         """salePrice < regularPrice → price_reduction deal."""
         item = self._make_item()
-        item["branches"]["836"]["salePrice"] = 5.50
-        p = self._to_unified(item, self._branch, self._scraped_at)
+        item["branch"]["salePrice"] = 5.50
+        p = self._to_unified(item, self._scraped_at)
         self.assertIsNotNone(p["deal"])
         self.assertEqual(p["deal"]["deal_type"], "price_reduction")
         self.assertAlmostEqual(p["deal"]["deal_price"], 5.50)
@@ -1596,7 +1595,7 @@ class TestMachsaneiExtraction(unittest.TestCase):
     def test_deal_multi_buy_from_special_type2(self):
         """specials type=2 → multi_buy deal."""
         item = self._make_item()
-        item["branches"]["836"]["specials"] = [
+        item["branch"]["specials"] = [
             {
                 "names": {"1": {"name": "3 יח' ב-18 ₪"}},
                 "firstLevel": {
@@ -1606,7 +1605,7 @@ class TestMachsaneiExtraction(unittest.TestCase):
                 },
             }
         ]
-        p = self._to_unified(item, self._branch, self._scraped_at)
+        p = self._to_unified(item, self._scraped_at)
         self.assertIsNotNone(p["deal"])
         self.assertEqual(p["deal"]["deal_type"], "multi_buy")
         self.assertEqual(p["deal"]["deal_min_qty"], 3)
@@ -1616,13 +1615,13 @@ class TestMachsaneiExtraction(unittest.TestCase):
     def test_deal_cart_total_from_special_type3(self):
         """specials type=3 → cart_total deal."""
         item = self._make_item()
-        item["branches"]["836"]["specials"] = [
+        item["branch"]["specials"] = [
             {
                 "names": {"1": {"name": "קנה ב-50 ₪ וקבל הנחה"}},
                 "firstLevel": {"type": 3},
             }
         ]
-        p = self._to_unified(item, self._branch, self._scraped_at)
+        p = self._to_unified(item, self._scraped_at)
         self.assertIsNotNone(p["deal"])
         self.assertEqual(p["deal"]["deal_type"], "cart_total")
 
@@ -1791,6 +1790,15 @@ class TestRamiLeviExtraction(unittest.TestCase):
 
 
 class TestKeshetExtraction(unittest.TestCase):
+    """Tests for the appId=4 per-branch/per-category schema.
+
+    Key differences from the old appId=2 schema:
+    - Branch data is in item["branch"] (singular), not item["branches"][str(id)].
+    - Barcode is extracted from the image URL, not a top-level field.
+    - Categories come from item["family"]["categories"], not item["department"].
+    - Brand comes from item["brand"]["names"]["1"].
+    """
+
     def setUp(self):
         from scrapers.keshet.keshet import ONLINE_BRANCHES, _to_unified
 
@@ -1799,26 +1807,31 @@ class TestKeshetExtraction(unittest.TestCase):
         self._scraped_at = "2026-03-25T10:00:00+00:00"
 
     def _make_item(self, **overrides) -> dict:
+        # Image URL with an embedded barcode (7290001234567) before a dash —
+        # this is the ZuZ appId=4 pattern used by both Keshet and Machsanei.
         item = {
             "id": 99001,
             "productId": 99001,
-            "barcode": "7290001234567",
             "localName": "שמן זית",
             "names": {"1": {"short": "שמן זית", "long": "שמן זית כתית מעולה 750מל"}},
             "isWeighable": False,
             "weight": 750,
             "unitOfMeasure": {"names": {"1": 'מ"ל'}},
-            "department": {"id": 55001, "name": "שמנים"},
-            "image": {"url": "https://cdn.example.com/olive.jpg"},
-            "branches": {
-                "1570": {
-                    "id": 1570,
-                    "isActive": True,
-                    "isVisible": True,
-                    "regularPrice": 24.90,
-                    "salePrice": None,
-                    "specials": [],
-                }
+            "family": {
+                "categories": [{"id": 79619, "names": {"1": {"long": "שמנים"}}}]
+            },
+            "brand": {"names": {"1": "יד מרדכי"}},
+            "image": {
+                "url": "https://d226b0iufwcjmj.cloudfront.net/gs1-products/1219/{{size}}/7290001234567-1.{{extension||'jpg'}}"
+            },
+            # appId=4: branch data in "branch" (singular), not "branches"
+            "branch": {
+                "id": 1570,
+                "isActive": True,
+                "isVisible": True,
+                "regularPrice": 24.90,
+                "salePrice": None,
+                "specials": [],
             },
         }
         item.update(overrides)
@@ -1833,9 +1846,23 @@ class TestKeshetExtraction(unittest.TestCase):
         p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
         self.assertEqual(p["store_id"], "1570")
 
-    def test_barcode_mapped(self):
+    def test_barcode_extracted_from_image_url(self):
+        """Barcode must be extracted from the image URL, not a direct field."""
         p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
         self.assertEqual(p["barcode"], "7290001234567")
+
+    def test_barcode_none_when_no_image(self):
+        item = self._make_item()
+        item["image"] = {}
+        p = self._to_unified(item, self._branch, self._scraped_at)
+        self.assertIsNone(p["barcode"])
+
+    def test_image_url_placeholders_expanded(self):
+        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        self.assertIsNotNone(p["image_url"])
+        self.assertNotIn("{{size}}", p["image_url"])
+        self.assertNotIn("{{extension", p["image_url"])
+        self.assertIn("large", p["image_url"])
 
     def test_price_mapped(self):
         p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
@@ -1849,22 +1876,44 @@ class TestKeshetExtraction(unittest.TestCase):
         self.assertAlmostEqual(p["unit_qty_si"], 750.0)
 
     def test_price_per_base_unit_volume(self):
-        """24.90 for 750ml → 3.32 per 100ml."""
+        """24.90 for 750ml → price per 100ml."""
         p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
         self.assertIsNotNone(p["price_per_base_unit"])
         self.assertAlmostEqual(
             p["price_per_base_unit"], round(24.90 / 750 * 100, 4), places=3
         )
 
+    def test_category_ids_from_family(self):
+        """Category IDs come from item["family"]["categories"], not department."""
+        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        self.assertIn("79619", p["category_ids"])
+
+    def test_brand_mapped(self):
+        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        self.assertEqual(p["brand"], "יד מרדכי")
+
     def test_inactive_branch_returns_none(self):
         item = self._make_item()
-        item["branches"]["1570"]["isActive"] = False
+        item["branch"]["isActive"] = False
+        p = self._to_unified(item, self._branch, self._scraped_at)
+        self.assertIsNone(p)
+
+    def test_invisible_branch_returns_none(self):
+        item = self._make_item()
+        item["branch"]["isVisible"] = False
+        p = self._to_unified(item, self._branch, self._scraped_at)
+        self.assertIsNone(p)
+
+    def test_missing_branch_key_returns_none(self):
+        """Products without a 'branch' key should be skipped."""
+        item = self._make_item()
+        del item["branch"]
         p = self._to_unified(item, self._branch, self._scraped_at)
         self.assertIsNone(p)
 
     def test_deal_price_reduction(self):
         item = self._make_item()
-        item["branches"]["1570"]["salePrice"] = 19.90
+        item["branch"]["salePrice"] = 19.90
         p = self._to_unified(item, self._branch, self._scraped_at)
         self.assertIsNotNone(p["deal"])
         self.assertEqual(p["deal"]["deal_type"], "price_reduction")
@@ -1872,7 +1921,7 @@ class TestKeshetExtraction(unittest.TestCase):
 
     def test_deal_multi_buy(self):
         item = self._make_item()
-        item["branches"]["1570"]["specials"] = [
+        item["branch"]["specials"] = [
             {
                 "names": {"1": {"name": "2 יח' ב-40 ₪"}},
                 "firstLevel": {
@@ -1895,34 +1944,44 @@ class TestKeshetExtraction(unittest.TestCase):
 
 
 class TestQuikExtraction(unittest.TestCase):
+    """Tests for the appId=4 per-branch/per-category schema.
+
+    Key differences from the old appId=2 schema:
+    - Branch data is in item["branch"] (singular), not item["branches"][str(id)].
+    - Barcode is extracted from the image URL, not a top-level field.
+    - Categories come from item["family"]["categories"], not item["department"].
+    - Brand comes from item["brand"]["names"]["1"].
+    """
+
     def setUp(self):
         from scrapers.quik.quik import ONLINE_BRANCHES, _to_unified
 
         self._to_unified = _to_unified
-        self._branch = ONLINE_BRANCHES[3]  # אשדוד, id=3086
+        self._branch = ONLINE_BRANCHES[3]  # אשדוד - Online, id=3086
         self._scraped_at = "2026-03-25T10:00:00+00:00"
 
     def _make_item(self, **overrides) -> dict:
         item = {
             "id": 88001,
             "productId": 88001,
-            "barcode": "7290005001234",
             "localName": "לחם אחיד",
             "names": {"1": {"short": "לחם אחיד", "long": "לחם אחיד כהה 750 גר"}},
             "isWeighable": False,
             "weight": 750,
             "unitOfMeasure": {"names": {"1": "גרם"}},
-            "department": {"id": 66001, "name": "לחם"},
-            "image": {"url": "https://cdn.example.com/bread.jpg"},
-            "branches": {
-                "3086": {
-                    "id": 3086,
-                    "isActive": True,
-                    "isVisible": True,
-                    "regularPrice": 8.90,
-                    "salePrice": None,
-                    "specials": [],
-                }
+            "family": {"categories": [{"id": 79687, "names": {"1": {"long": "לחם"}}}]},
+            "brand": {"names": {"1": "אחלה לחם"}},
+            "image": {
+                "url": "https://d226b0iufwcjmj.cloudfront.net/gs1-products/1541/{{size}}/7290005001234-1.{{extension||'jpg'}}"
+            },
+            # appId=4: branch data in "branch" (singular), not "branches"
+            "branch": {
+                "id": 3086,
+                "isActive": True,
+                "isVisible": True,
+                "regularPrice": 8.90,
+                "salePrice": None,
+                "specials": [],
             },
         }
         item.update(overrides)
@@ -1937,6 +1996,24 @@ class TestQuikExtraction(unittest.TestCase):
         p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
         self.assertEqual(p["store_id"], "3086")
 
+    def test_barcode_extracted_from_image_url(self):
+        """Barcode must be extracted from the image URL, not a direct field."""
+        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        self.assertEqual(p["barcode"], "7290005001234")
+
+    def test_barcode_none_when_no_image(self):
+        item = self._make_item()
+        item["image"] = {}
+        p = self._to_unified(item, self._branch, self._scraped_at)
+        self.assertIsNone(p["barcode"])
+
+    def test_image_url_placeholders_expanded(self):
+        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        self.assertIsNotNone(p["image_url"])
+        self.assertNotIn("{{size}}", p["image_url"])
+        self.assertNotIn("{{extension", p["image_url"])
+        self.assertIn("large", p["image_url"])
+
     def test_unit_dimension_mass(self):
         p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
         self.assertEqual(p["unit_dimension"], "mass")
@@ -1950,21 +2027,41 @@ class TestQuikExtraction(unittest.TestCase):
             p["price_per_base_unit"], round(8.90 / 750 * 100, 4), places=3
         )
 
-    def test_missing_branch_returns_none(self):
+    def test_missing_branch_key_returns_none(self):
+        """Products without a 'branch' key should be skipped."""
         item = self._make_item()
-        item["branches"] = {}
+        del item["branch"]
+        p = self._to_unified(item, self._branch, self._scraped_at)
+        self.assertIsNone(p)
+
+    def test_inactive_branch_returns_none(self):
+        item = self._make_item()
+        item["branch"]["isActive"] = False
         p = self._to_unified(item, self._branch, self._scraped_at)
         self.assertIsNone(p)
 
     def test_zero_price_returns_none(self):
         item = self._make_item()
-        item["branches"]["3086"]["regularPrice"] = 0
+        item["branch"]["regularPrice"] = 0
         p = self._to_unified(item, self._branch, self._scraped_at)
         self.assertIsNone(p)
 
-    def test_category_from_department(self):
+    def test_category_ids_from_family(self):
+        """Category IDs come from item["family"]["categories"], not department."""
         p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
-        self.assertIn("66001", p["category_ids"])
+        self.assertIn("79687", p["category_ids"])
+
+    def test_brand_mapped(self):
+        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        self.assertEqual(p["brand"], "אחלה לחם")
+
+    def test_deal_price_reduction(self):
+        item = self._make_item()
+        item["branch"]["salePrice"] = 6.90
+        p = self._to_unified(item, self._branch, self._scraped_at)
+        self.assertIsNotNone(p["deal"])
+        self.assertEqual(p["deal"]["deal_type"], "price_reduction")
+        self.assertAlmostEqual(p["deal"]["deal_price"], 6.90)
 
 
 # ---------------------------------------------------------------------------
@@ -1973,34 +2070,46 @@ class TestQuikExtraction(unittest.TestCase):
 
 
 class TestVictoryExtraction(unittest.TestCase):
+    """Tests for the appId=4 per-branch/per-category schema.
+
+    Key differences from the old appId=2 schema:
+    - Branch data is in item["branch"] (singular), not item["branches"][str(id)].
+    - Barcode is extracted from the image URL, not a top-level field.
+    - Categories come from item["family"]["categories"], not item["department"].
+    - Brand comes from item["brand"]["names"]["1"].
+    """
+
     def setUp(self):
         from scrapers.victory.victory import ONLINE_BRANCHES, _to_unified
 
         self._to_unified = _to_unified
-        self._branch = ONLINE_BRANCHES[2]  # ויקטורי אשדוד, id=2527
+        self._branch = ONLINE_BRANCHES[2]  # ויקטורי אשדוד - Victory Online, id=2527
         self._scraped_at = "2026-03-25T10:00:00+00:00"
 
     def _make_item(self, **overrides) -> dict:
         item = {
             "id": 77001,
             "productId": 77001,
-            "barcode": "7290009876543",
             "localName": "גבינה צהובה",
             "names": {"1": {"short": "גבינה צהובה", "long": "גבינה צהובה 28% 200 גר"}},
             "isWeighable": False,
             "weight": 200,
             "unitOfMeasure": {"names": {"1": "גרם"}},
-            "department": {"id": 77100, "name": "גבינות"},
-            "image": {"url": "https://cdn.example.com/cheese.jpg"},
-            "branches": {
-                "2527": {
-                    "id": 2527,
-                    "isActive": True,
-                    "isVisible": True,
-                    "regularPrice": 12.50,
-                    "salePrice": None,
-                    "specials": [],
-                }
+            "family": {
+                "categories": [{"id": 79718, "names": {"1": {"long": "חלב וגבינות"}}}]
+            },
+            "brand": {"names": {"1": "תנובה"}},
+            "image": {
+                "url": "https://d226b0iufwcjmj.cloudfront.net/gs1-products/1470/{{size}}/7290009876543-1.{{extension||'jpg'}}"
+            },
+            # appId=4: branch data in "branch" (singular), not "branches"
+            "branch": {
+                "id": 2527,
+                "isActive": True,
+                "isVisible": True,
+                "regularPrice": 12.50,
+                "salePrice": None,
+                "specials": [],
             },
         }
         item.update(overrides)
@@ -2015,6 +2124,24 @@ class TestVictoryExtraction(unittest.TestCase):
         p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
         self.assertEqual(p["store_id"], "2527")
 
+    def test_barcode_extracted_from_image_url(self):
+        """Barcode must be extracted from the image URL, not a direct field."""
+        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        self.assertEqual(p["barcode"], "7290009876543")
+
+    def test_barcode_none_when_no_image(self):
+        item = self._make_item()
+        item["image"] = {}
+        p = self._to_unified(item, self._branch, self._scraped_at)
+        self.assertIsNone(p["barcode"])
+
+    def test_image_url_placeholders_expanded(self):
+        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        self.assertIsNotNone(p["image_url"])
+        self.assertNotIn("{{size}}", p["image_url"])
+        self.assertNotIn("{{extension", p["image_url"])
+        self.assertIn("large", p["image_url"])
+
     def test_price_mapped(self):
         p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
         self.assertAlmostEqual(p["regular_price"], 12.50)
@@ -2024,23 +2151,39 @@ class TestVictoryExtraction(unittest.TestCase):
         p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
         self.assertEqual(p["unit_dimension"], "mass")
 
+    def test_category_ids_from_family(self):
+        """Category IDs come from item["family"]["categories"], not department."""
+        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        self.assertIn("79718", p["category_ids"])
+
+    def test_brand_mapped(self):
+        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        self.assertEqual(p["brand"], "תנובה")
+
     def test_sale_price_creates_deal(self):
         item = self._make_item()
-        item["branches"]["2527"]["salePrice"] = 9.90
+        item["branch"]["salePrice"] = 9.90
         p = self._to_unified(item, self._branch, self._scraped_at)
         self.assertIsNotNone(p["deal"])
         self.assertEqual(p["deal"]["deal_type"], "price_reduction")
 
     def test_invisible_branch_returns_none(self):
         item = self._make_item()
-        item["branches"]["2527"]["isVisible"] = False
+        item["branch"]["isVisible"] = False
+        p = self._to_unified(item, self._branch, self._scraped_at)
+        self.assertIsNone(p)
+
+    def test_missing_branch_key_returns_none(self):
+        """Products without a 'branch' key should be skipped."""
+        item = self._make_item()
+        del item["branch"]
         p = self._to_unified(item, self._branch, self._scraped_at)
         self.assertIsNone(p)
 
     def test_deal_zero_qty_req_skipped(self):
         """multi_buy with qty_req=0 must not raise ZeroDivisionError."""
         item = self._make_item()
-        item["branches"]["2527"]["specials"] = [
+        item["branch"]["specials"] = [
             {
                 "names": {"1": {"name": "מבצע"}},
                 "firstLevel": {
@@ -2061,6 +2204,15 @@ class TestVictoryExtraction(unittest.TestCase):
 
 
 class TestYbitanExtraction(unittest.TestCase):
+    """Tests for the appId=4 per-branch/per-category schema.
+
+    Key differences from the old appId=2 schema:
+    - Branch data is in item["branch"] (singular), not item["branches"][str(id)].
+    - Barcode is extracted from the image URL, not a top-level field.
+    - Categories come from item["family"]["categories"], not item["department"].
+    - Brand comes from item["brand"]["names"]["1"].
+    """
+
     def setUp(self):
         from scrapers.ybitan.ybitan import ONLINE_BRANCHES, _to_unified
 
@@ -2072,7 +2224,6 @@ class TestYbitanExtraction(unittest.TestCase):
         item = {
             "id": 66001,
             "productId": 66001,
-            "barcode": "7290002345678",
             "localName": "יין אדום",
             "names": {
                 "1": {"short": "יין אדום", "long": "יין אדום קברנה סוביניון 750מל"}
@@ -2080,17 +2231,21 @@ class TestYbitanExtraction(unittest.TestCase):
             "isWeighable": False,
             "weight": 750,
             "unitOfMeasure": {"names": {"1": 'מ"ל'}},
-            "department": {"id": 88100, "name": "יינות"},
-            "image": {"url": "https://cdn.example.com/wine.jpg"},
-            "branches": {
-                "1855": {
-                    "id": 1855,
-                    "isActive": True,
-                    "isVisible": True,
-                    "regularPrice": 49.90,
-                    "salePrice": None,
-                    "specials": [],
-                }
+            "family": {
+                "categories": [{"id": 79667, "names": {"1": {"long": "יינות ומשקאות"}}}]
+            },
+            "brand": {"names": {"1": "יקב ברקן"}},
+            "image": {
+                "url": "https://d226b0iufwcjmj.cloudfront.net/gs1-products/1131/{{size}}/7290002345678-1.{{extension||'jpg'}}"
+            },
+            # appId=4: branch data in "branch" (singular), not "branches"
+            "branch": {
+                "id": 1855,
+                "isActive": True,
+                "isVisible": True,
+                "regularPrice": 49.90,
+                "salePrice": None,
+                "specials": [],
             },
         }
         item.update(overrides)
@@ -2105,9 +2260,23 @@ class TestYbitanExtraction(unittest.TestCase):
         p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
         self.assertEqual(p["store_id"], "1855")
 
-    def test_barcode_mapped(self):
+    def test_barcode_extracted_from_image_url(self):
+        """Barcode must be extracted from the image URL, not a direct field."""
         p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
         self.assertEqual(p["barcode"], "7290002345678")
+
+    def test_barcode_none_when_no_image(self):
+        item = self._make_item()
+        item["image"] = {}
+        p = self._to_unified(item, self._branch, self._scraped_at)
+        self.assertIsNone(p["barcode"])
+
+    def test_image_url_placeholders_expanded(self):
+        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        self.assertIsNotNone(p["image_url"])
+        self.assertNotIn("{{size}}", p["image_url"])
+        self.assertNotIn("{{extension", p["image_url"])
+        self.assertIn("large", p["image_url"])
 
     def test_unit_dimension_volume(self):
         p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
@@ -2121,22 +2290,34 @@ class TestYbitanExtraction(unittest.TestCase):
             p["price_per_base_unit"], round(49.90 / 750 * 100, 4), places=3
         )
 
+    def test_category_ids_from_family(self):
+        """Category IDs come from item["family"]["categories"], not department."""
+        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        self.assertIn("79667", p["category_ids"])
+
+    def test_brand_mapped(self):
+        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
+        self.assertEqual(p["brand"], "יקב ברקן")
+
     def test_price_reduction_deal(self):
         item = self._make_item()
-        item["branches"]["1855"]["salePrice"] = 39.90
+        item["branch"]["salePrice"] = 39.90
         p = self._to_unified(item, self._branch, self._scraped_at)
         self.assertIsNotNone(p["deal"])
         self.assertEqual(p["deal"]["deal_type"], "price_reduction")
         self.assertAlmostEqual(p["deal"]["deal_price"], 39.90)
         self.assertIsNotNone(p["deal"]["price_per_base_unit_deal"])
 
-    def test_category_from_department(self):
-        p = self._to_unified(self._make_item(), self._branch, self._scraped_at)
-        self.assertIn("88100", p["category_ids"])
+    def test_missing_branch_key_returns_none(self):
+        """Products without a 'branch' key should be skipped."""
+        item = self._make_item()
+        del item["branch"]
+        p = self._to_unified(item, self._branch, self._scraped_at)
+        self.assertIsNone(p)
 
     def test_no_price_returns_none(self):
         item = self._make_item()
-        item["branches"]["1855"]["regularPrice"] = None
+        item["branch"]["regularPrice"] = None
         p = self._to_unified(item, self._branch, self._scraped_at)
         self.assertIsNone(p)
 
