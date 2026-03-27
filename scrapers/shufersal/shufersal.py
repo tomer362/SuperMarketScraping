@@ -63,6 +63,11 @@ SHUFERSAL_SEARCH_URL = f"{SHUFERSAL_BASE_URL}/search/results"
 _GLOBAL_STORE_ID = "global"
 _GLOBAL_STORE_NAME = "Shufersal Online"
 
+# Barcode embedded in Shufersal CDN image URLs, e.g.:
+#   .../products_large/FOW60_L_P_7290000066882_1.png
+#   .../products_large/BMB18_L_P_7290000066882_1.jpg
+_BARCODE_FROM_IMAGE_RE = re.compile(r"_P_(\d{7,14})_")
+
 # ---------------------------------------------------------------------------
 # HTTP helpers
 # ---------------------------------------------------------------------------
@@ -308,6 +313,11 @@ def _to_unified(item: Dict[str, Any], scraped_at: str) -> Optional[UnifiedProduc
 
     ean = item.get("ean")
     barcode: Optional[str] = str(ean) if ean else None
+    # Fall back to extracting the barcode from the CDN image URL
+    if barcode is None and image_url:
+        m = _BARCODE_FROM_IMAGE_RE.search(image_url)
+        if m:
+            barcode = m.group(1)
 
     unit_description: Optional[str] = item.get("unitDescription") or None
     raw_uom: Optional[str] = item.get("unitForComparison") or None
