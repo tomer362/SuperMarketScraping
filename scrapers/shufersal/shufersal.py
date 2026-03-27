@@ -325,6 +325,21 @@ def _to_unified(item: Dict[str, Any], scraped_at: str) -> Optional[UnifiedProduc
         item, regular_price_f, promo_price, qty_si, dimension, is_weighable
     )
 
+    # If discount_pct wasn't derived from a direct promo_price, backfill it from
+    # the parsed deal's per-unit price (covers multi_buy and promotionMsg deals).
+    if discount_pct is None and deal is not None:
+        deal_ppu = deal.get("deal_price_per_unit")
+        if deal_ppu is not None and regular_price_f > 0 and deal_ppu < regular_price_f:
+            discount_pct = round((1 - deal_ppu / regular_price_f) * 100, 2)
+
+    # For deals that lower the per-unit price (multi_buy, price_reduction from msg),
+    # also expose sale_price so callers can use it without inspecting the deal dict.
+    sale_price_out = promo_price
+    if sale_price_out is None and deal is not None:
+        deal_ppu = deal.get("deal_price_per_unit")
+        if deal_ppu is not None and deal_ppu < regular_price_f:
+            sale_price_out = deal_ppu
+
     return UnifiedProduct(
         chain=CHAIN,
         store_id=_GLOBAL_STORE_ID,
@@ -333,7 +348,7 @@ def _to_unified(item: Dict[str, Any], scraped_at: str) -> Optional[UnifiedProduc
         name=name,
         price=effective_price,
         regular_price=regular_price_f,
-        sale_price=promo_price,
+        sale_price=sale_price_out,
         discount_percent=discount_pct,
         barcode=barcode,
         image_url=image_url,

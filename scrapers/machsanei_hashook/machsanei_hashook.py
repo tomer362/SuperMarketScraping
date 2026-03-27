@@ -10,27 +10,30 @@ Key endpoints
      GET /v2/retailers/1107/branches?appId=2&languageId=1
    Response: { "branches": [ { "id": 3474, "name": "אופקים", "city": "אופקים", ... } ] }
 
-2. Full product catalogue (all branches in one response, offset pagination):
-     GET /v2/retailers/1107/products
-         ?appId=2&from={offset}&size={size}&languageId=1
+2. Per-branch, per-category product catalogue (appId=4, offset pagination):
+     GET /v2/retailers/1107/branches/836/categories/{catId}/products
+         ?appId=4&from={offset}&size={size}&languageId=1
+         &categorySort={"sortType":1}
+         &filters={"mustNot":{"term":{"branch.isOutOfStock":true}}}
    Response: { "total": N, "products": [ ... ] }
+   Branch data lives in product["branch"] (singular dict, not keyed by branch ID).
 
-3. Search (same endpoint with q= param):
-     GET /v2/retailers/1107/products
-         ?appId=2&q={encoded_query}&from=0&size={size}&languageId=1
+3. Specials/deals endpoint (deals also embedded in product["branch"]["specials"]):
+     GET /v2/retailers/1107/branches/836/specials
+         ?appId=4&from=0&size=N
+         &filters={"must":{"lessThan":{"startDate":"<ISO>"},"greaterThan":{"endDate":"<ISO>"},"term":{"displayOnWeb":true}}}
+         &sort={"priority":"desc"}
 
-Key differences from Stor.ai (Tiv Taam / Carrefour)
-----------------------------------------------------
-- Branch data is **embedded per product** in ``product["branches"][str(branch_id)]``
-  rather than in a separate ``branch`` key.
-- Barcode is a top-level field (``barcode`` / ``localBarcode``), NOT extracted
-  from the image URL.
-- Categories are in ``product["department"]`` (id + name), not ``family.categories``.
-- Image URL is a direct URL — no ``{{size}}`` / ``{{extension}}`` template expansion.
-- The products endpoint always returns data for all branches; filtering per branch
-  is done client-side by checking ``branches[str(branch_id)].isActive == True``,
-  ``isVisible == True``, and ``regularPrice > 0``.
-- Specials/deals share the same firstLevel structure as Stor.ai.
+Key differences from old appId=2 global endpoint
+-------------------------------------------------
+- Only branch 836 (Beer Sheva) is a real physical store; the others in the API
+  are delivery zones, not separate branches.  We always scrape only branch 836.
+- Branch data is in product["branch"] (singular), NOT product["branches"]["836"].
+- Barcode is NOT a top-level field; it must be extracted from the image URL.
+- Image URL is a template with {{size}} and {{extension||'jpg'}} placeholders.
+- Categories are in product["family"]["categories"] (list), not product["department"].
+- Brand is in product["brand"]["names"]["1"].
+- Deals/specials share the same firstLevel structure as before.
 
 Unified API
 -----------
@@ -42,8 +45,9 @@ or barcode.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
 from urllib.parse import quote
 
 import aiohttp
@@ -72,8 +76,15 @@ CHAIN = "machsanei"
 RETAILER_ID = 1107
 BASE_URL = "https://www.mck.co.il"
 
+# The only real physical branch.  All other IDs in the API are delivery zones.
+BRANCH_ID = 836
+
+# Regex to extract a barcode (7–14 digits) from the image URL.
+# Image URLs look like: .../gs1-products/1107/{size}/8700216965705-9...
+_BARCODE_RE = re.compile(r"/(\d{7,14})-")
+
 # ---------------------------------------------------------------------------
-# Branch list (confirmed via API 2026-03)
+# Branch list  (single real branch)
 # ---------------------------------------------------------------------------
 
 
@@ -85,15 +96,31 @@ class Branch(TypedDict):
 
 
 ONLINE_BRANCHES: List[Branch] = [
-    {"id": 3474, "name": "אופקים", "city": "אופקים", "location": ""},
-    {"id": 1650, "name": "אילת", "city": "אילת", "location": ""},
-    {"id": 836, "name": "באר שבע", "city": "באר שבע", "location": ""},
-    {"id": 2039, "name": "להבים", "city": "להבים", "location": ""},
-    {"id": 1701, "name": "מיתרים", "city": "מיתרים", "location": ""},
-    {"id": 2933, "name": "נוף הגליל", "city": "נוף הגליל", "location": ""},
-    {"id": 1587, "name": "נשר", "city": "נשר", "location": ""},
-    {"id": 2983, "name": "עין יהב", "city": "עין יהב", "location": ""},
-    {"id": 1370, "name": "קרית גת", "city": "קרית גת", "location": ""},
+    {"id": 836, "name": "מחסני השוק", "city": "באר שבע", "location": ""},
+]
+
+# ---------------------------------------------------------------------------
+# Top-level visible categories for branch 836 (discovered 2026-03)
+# Each tuple is (category_id, hebrew_name).
+# ---------------------------------------------------------------------------
+
+MAIN_CATEGORIES: List[Tuple[int, str]] = [
+    (79704, "ירקות ופירות"),
+    (79718, "מוצרי קירור וביצים"),
+    (79687, "לחמים עוגות ועוגיות"),
+    (79821, "עוף בשר ודגים"),
+    (79731, "דגנים"),
+    (79619, "שימורים בישול ואפיה"),
+    (79603, "מעדניה סלטים ונקניקים"),
+    (79591, "קפואים"),
+    (79653, "חטיפים וממתקים"),
+    (79667, "משקאות ויין"),
+    (79835, "בריאות ותזונה"),
+    (79740, "ניקיון"),
+    (79571, "פארם ותינוקות"),
+    (79764, "כלי בית ופנאי"),
+    (122168, "טבק ומוצרי עישון"),
+    (96764, "חג הפסח"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -101,8 +128,11 @@ ONLINE_BRANCHES: List[Branch] = [
 # ---------------------------------------------------------------------------
 
 
-def _products_url() -> str:
-    return f"{BASE_URL}/v2/retailers/{RETAILER_ID}/products"
+def _category_products_url(cat_id: int) -> str:
+    return (
+        f"{BASE_URL}/v2/retailers/{RETAILER_ID}"
+        f"/branches/{BRANCH_ID}/categories/{cat_id}/products"
+    )
 
 
 def _branches_url() -> str:
@@ -110,19 +140,51 @@ def _branches_url() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Low-level fetch helpers
+# Barcode + image helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_barcode(image_url: Optional[str]) -> Optional[str]:
+    """Extract barcode from an image URL.
+
+    Image URLs embed the barcode before a dash, e.g.:
+      .../gs1-products/1107/large/8700216965705-9...
+    Returns the barcode string, or None if not found.
+    """
+    if not image_url:
+        return None
+    m = _BARCODE_RE.search(image_url)
+    return m.group(1) if m else None
+
+
+def _expand_image_url(raw: Optional[str]) -> Optional[str]:
+    """Expand ZuZ image URL template placeholders.
+
+    Replaces ``{{size}}`` with ``large`` and
+    ``{{extension||'jpg'}}`` (or ``{{extension}}``) with ``jpg``.
+    """
+    if not raw:
+        return None
+    url = raw.replace("{{size}}", "large")
+    # Handle both {{extension||'jpg'}} and {{extension}}
+    url = re.sub(r"\{\{extension(?:\|\|'[^']*')?\}\}", "jpg", url)
+    return url
+
+
+# ---------------------------------------------------------------------------
+# Low-level fetch helper
 # ---------------------------------------------------------------------------
 
 
 async def _fetch_page(
     session: aiohttp.ClientSession,
-    params: str,
+    url: str,
     *,
     max_retries: int = 3,
     base_delay: float = 1.0,
     label: str = "",
 ) -> Dict[str, Any]:
-    url = f"{_products_url()}?{params}"
+    """Fetch a single paginated API page and return the parsed JSON."""
     headers = get_browser_headers(BASE_URL)
 
     async def _do() -> Dict[str, Any]:
@@ -143,6 +205,11 @@ async def _fetch_page(
     except Exception as exc:
         logger.error("Failed %s: %s", label or url, exc)
         return {}
+
+
+# ---------------------------------------------------------------------------
+# Branch list fetch (live API)
+# ---------------------------------------------------------------------------
 
 
 async def fetch_branches(session: aiohttp.ClientSession) -> List[Branch]:
@@ -174,7 +241,7 @@ async def fetch_branches(session: aiohttp.ClientSession) -> List[Branch]:
 
 
 # ---------------------------------------------------------------------------
-# Deal extraction (ZuZ specials — same structure as Stor.ai)
+# Deal extraction (ZuZ specials — same firstLevel structure as Stor.ai)
 # ---------------------------------------------------------------------------
 
 
@@ -265,23 +332,19 @@ def _extract_deal(
 
 
 # ---------------------------------------------------------------------------
-# Product mapping → UnifiedProduct  (for a specific branch)
+# Product mapping → UnifiedProduct
 # ---------------------------------------------------------------------------
 
 
 def _to_unified(
     item: Dict[str, Any],
-    branch: Branch,
     scraped_at: str,
 ) -> Optional[UnifiedProduct]:
-    """Convert a ZuZ product dict to a UnifiedProduct for ``branch``.
+    """Convert a ZuZ appId=4 product dict to a UnifiedProduct for branch 836.
 
-    Returns None if the product is inactive / invisible / has no price in this
-    branch.
+    Returns None if the product is inactive / invisible / has no price.
     """
-    branch_id_str = str(branch["id"])
-    branches_map: Dict[str, Any] = item.get("branches") or {}
-    branch_info: Dict[str, Any] = branches_map.get(branch_id_str) or {}
+    branch_info: Dict[str, Any] = item.get("branch") or {}
 
     # Skip products not active in this branch
     if not (branch_info.get("isActive") and branch_info.get("isVisible")):
@@ -303,13 +366,10 @@ def _to_unified(
     if not name:
         return None
 
-    # Barcode (top-level on ZuZ, not in image URL)
-    barcode: Optional[str] = item.get("barcode") or item.get("localBarcode") or None
-    if barcode:
-        barcode = str(barcode).strip() or None
-
-    # Image URL (direct, no template substitution needed)
-    image_url: Optional[str] = (item.get("image") or {}).get("url") or None
+    # Image URL: expand template placeholders then extract barcode from it
+    raw_image_url: Optional[str] = (item.get("image") or {}).get("url") or None
+    image_url = _expand_image_url(raw_image_url)
+    barcode = _extract_barcode(image_url)
 
     # Sale price
     sale_price_raw = branch_info.get("salePrice")
@@ -339,10 +399,18 @@ def _to_unified(
 
     ppbu = compute_price_per_base_unit(effective_price, qty_si, dimension, is_weighable)
 
-    # Category: ZuZ uses a flat "department" dict
-    department = item.get("department") or {}
-    dept_id = department.get("id")
-    category_ids: List[str] = [str(dept_id)] if dept_id is not None else []
+    # Category IDs: come from family.categories (list of {id, names})
+    family = item.get("family") or {}
+    family_cats = family.get("categories") or []
+    category_ids: List[str] = [
+        str(c["id"]) for c in family_cats if c.get("id") is not None
+    ]
+
+    # Brand
+    brand_raw = (item.get("brand") or {}).get("names") or {}
+    brand: Optional[str] = (brand_raw.get("1") or None) or None
+    if brand:
+        brand = str(brand).strip() or None
 
     # Deal extraction
     deal = _extract_deal(
@@ -351,8 +419,8 @@ def _to_unified(
 
     return UnifiedProduct(
         chain=CHAIN,
-        store_id=branch_id_str,
-        store_name=branch.get("name", ""),
+        store_id=str(BRANCH_ID),
+        store_name=ONLINE_BRANCHES[0]["name"],
         product_id=str(item.get("productId") or item.get("id") or ""),
         name=str(name),
         price=effective_price,
@@ -370,14 +438,14 @@ def _to_unified(
         unit_dimension=dimension,
         price_per_base_unit=ppbu,
         deal=deal,
-        brand=None,
+        brand=brand,
         manufacturer=None,
         scraped_at=scraped_at,
     )
 
 
 # ---------------------------------------------------------------------------
-# Paginated fetch for one or more branches
+# Paginated fetch across all categories
 # ---------------------------------------------------------------------------
 
 
@@ -390,97 +458,75 @@ async def _fetch_all_products(
     max_retries: int = 3,
     base_delay: float = 1.0,
 ) -> List[Dict[str, Any]]:
-    """Fetch all products from the global ZuZ products endpoint (paginated).
+    """Fetch all products for branch 836 by iterating MAIN_CATEGORIES.
 
-    If ``name_query`` is supplied the search endpoint is used instead.
-    Returns raw product dicts (not yet filtered per branch).
+    Each category is paginated independently with the appId=4 per-branch
+    endpoint (no global 10K cap).  Products are deduplicated by productId.
+
+    If ``name_query`` is supplied it is appended as a ``q=`` parameter.
     """
-    base_params = "appId=2&languageId=1"
-    if name_query:
-        base_params += f"&q={quote(name_query)}"
+    all_products: Dict[str, Dict[str, Any]] = {}  # keyed by productId for dedup
 
-    # Probe to get total
-    probe = await _fetch_page(
-        session,
-        f"{base_params}&from=0&size=1",
-        max_retries=max_retries,
-        base_delay=base_delay,
-        label="probe",
+    common_params = (
+        "appId=4&languageId=1"
+        '&categorySort={"sortType":1}'
+        '&filters={"mustNot":{"term":{"branch.isOutOfStock":true}}}'
     )
-    total = probe.get("total", 0)
-    if total == 0:
-        logger.info("machsanei: 0 products found (probe).")
-        return []
+    if name_query:
+        common_params += f"&q={quote(name_query)}"
 
-    logger.info("machsanei: %d total products to fetch.", total)
+    for cat_id, cat_name in MAIN_CATEGORIES:
+        base_url = _category_products_url(cat_id)
 
-    # Build page tasks
-    offsets = list(range(0, total, batch_size))
-
-    async def _fetch_offset(offset: int) -> List[Dict[str, Any]]:
-        data = await _fetch_page(
+        # Probe to get total for this category
+        probe_url = f"{base_url}?{common_params}&from=0&size=1"
+        probe = await _fetch_page(
             session,
-            f"{base_params}&from={offset}&size={batch_size}",
+            probe_url,
             max_retries=max_retries,
             base_delay=base_delay,
-            label=f"offset={offset}",
+            label=f"probe cat={cat_id}",
         )
-        return data.get("products", [])
-
-    task_fns = [lambda off=off: _fetch_offset(off) for off in offsets]
-    results = await run_concurrently(task_fns, max_concurrent=max_concurrent)
-
-    all_products: List[Dict[str, Any]] = []
-    for r in results:
-        if isinstance(r, Exception):
-            logger.warning("Page fetch error: %s", r)
-        elif r:
-            all_products.extend(r)
-
-    return all_products
-
-
-# ---------------------------------------------------------------------------
-# Per-branch filtering + mapping
-# ---------------------------------------------------------------------------
-
-
-def _filter_and_map_branch(
-    raw_products: List[Dict[str, Any]],
-    branch: Branch,
-    flt: ScrapeFilter,
-    scraped_at: str,
-) -> List[UnifiedProduct]:
-    """Filter raw products for a single branch and map to UnifiedProduct."""
-    filter_barcode = flt.get("barcode")
-    filter_cats = flt.get("category_ids")
-
-    products: List[UnifiedProduct] = []
-    seen_ids: set = set()
-
-    for item in raw_products:
-        p = _to_unified(item, branch, scraped_at)
-        if p is None:
+        total = probe.get("total", 0)
+        if total == 0:
+            logger.debug("machsanei: category %s (%s) — 0 products", cat_id, cat_name)
             continue
 
-        # Post-filters
-        if filter_barcode and p.get("barcode") != filter_barcode:
-            continue
-        if filter_cats and not any(c in filter_cats for c in p.get("category_ids", [])):
-            continue
+        logger.info(
+            "machsanei: category %s (%s) — %d products", cat_id, cat_name, total
+        )
 
-        pid = p["product_id"]
-        if pid not in seen_ids:
-            seen_ids.add(pid)
-            products.append(p)
+        offsets = list(range(0, total, batch_size))
+
+        async def _fetch_offset(
+            offset: int, cat_id: int = cat_id, cat_name: str = cat_name
+        ) -> List[Dict[str, Any]]:
+            url = f"{_category_products_url(cat_id)}?{common_params}&from={offset}&size={batch_size}"
+            data = await _fetch_page(
+                session,
+                url,
+                max_retries=max_retries,
+                base_delay=base_delay,
+                label=f"cat={cat_id} offset={offset}",
+            )
+            return data.get("products", [])
+
+        task_fns = [lambda off=off: _fetch_offset(off) for off in offsets]
+        results = await run_concurrently(task_fns, max_concurrent=max_concurrent)
+
+        for r in results:
+            if isinstance(r, Exception):
+                logger.warning("Page fetch error in cat=%s: %s", cat_id, r)
+            elif r:
+                for product in r:
+                    pid = str(product.get("productId") or product.get("id") or "")
+                    if pid and pid not in all_products:
+                        all_products[pid] = product
 
     logger.info(
-        "branch=%s (%s) — %d unique active products",
-        branch["id"],
-        branch.get("name", ""),
-        len(products),
+        "machsanei: %d unique products across all categories", len(all_products)
     )
-    return products
+    return list(all_products.values())
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +545,7 @@ async def scrape(
     """Scrape Machsanei HaShook and return a unified ScrapeResult.
 
     Args:
-        branches:         Branches to scrape (default: all ONLINE_BRANCHES).
+        branches:         Ignored — always scrapes branch 836 only.
         flt:              Optional filters (name_query, category_ids, barcode).
         batch_size:       Products per paginated request (default 100).
         max_concurrent:   Max concurrent page requests (default 15).
@@ -507,10 +553,8 @@ async def scrape(
         base_retry_delay: Base exponential-backoff delay in seconds (default 1.0).
 
     Returns:
-        ScrapeResult with products_by_store keyed by str(branch_id).
+        ScrapeResult with products_by_store keyed by "836".
     """
-    if branches is None:
-        branches = ONLINE_BRANCHES
     if flt is None:
         flt = {}
 
@@ -519,10 +563,11 @@ async def scrape(
     errors: List[str] = []
 
     name_query = flt.get("name_query") or None
+    filter_barcode = flt.get("barcode")
+    filter_cats = flt.get("category_ids")
 
     connector = aiohttp.TCPConnector(ssl=make_ssl_context())
     async with aiohttp.ClientSession(connector=connector) as session:
-        # Fetch all products once (the ZuZ API returns all branches in one response)
         try:
             raw_products = await _fetch_all_products(
                 session,
@@ -538,24 +583,37 @@ async def scrape(
             errors.append(msg)
             raw_products = []
 
-        # Map & filter per branch
-        products_by_store: Dict[str, List[UnifiedProduct]] = {}
-        for branch in branches:
-            try:
-                prods = _filter_and_map_branch(raw_products, branch, flt, scraped_at)
-                products_by_store[str(branch["id"])] = prods
-            except Exception as exc:
-                msg = f"branch={branch['id']} mapping failed: {exc}"
-                logger.error(msg)
-                errors.append(msg)
-                products_by_store[str(branch["id"])] = []
+    # Map raw products → UnifiedProduct, apply post-filters
+    products: List[UnifiedProduct] = []
+    seen_ids: set = set()
+
+    for item in raw_products:
+        p = _to_unified(item, scraped_at)
+        if p is None:
+            continue
+
+        if filter_barcode and p.get("barcode") != filter_barcode:
+            continue
+        if filter_cats and not any(c in filter_cats for c in p.get("category_ids", [])):
+            continue
+
+        pid = p["product_id"]
+        if pid not in seen_ids:
+            seen_ids.add(pid)
+            products.append(p)
+
+    logger.info(
+        "machsanei: branch=%s — %d unique active products", BRANCH_ID, len(products)
+    )
+
+    products_by_store: Dict[str, List[UnifiedProduct]] = {str(BRANCH_ID): products}
 
     duration = time.monotonic() - t0
-    total = sum(len(v) for v in products_by_store.values())
+    total = len(products)
 
     return ScrapeResult(
         chain=CHAIN,
-        stores_scraped=len(branches),
+        stores_scraped=1,
         products_total=total,
         products_by_store=products_by_store,
         scraped_at=scraped_at,

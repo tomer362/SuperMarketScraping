@@ -59,8 +59,16 @@ from scrapers.common import ScrapeFilter
 # ---------------------------------------------------------------------------
 
 
+class _HelpOnErrorParser(argparse.ArgumentParser):
+    """ArgumentParser that prints the full help message before any error."""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        self.print_help(sys.stderr)
+        self.exit(2, f"\nerror: {message}\n")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+    p = _HelpOnErrorParser(
         prog="chp_main.py",
         description="Scrape product prices from chp.co.il (Israeli price comparison)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -189,7 +197,7 @@ def _print_summary(result: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def async_main(args: argparse.Namespace) -> int:
+async def async_main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     # Configure logging
     level = (
         logging.DEBUG
@@ -233,11 +241,7 @@ async def async_main(args: argparse.Namespace) -> int:
     browse_all = getattr(args, "browse_all", False)
 
     if not query and not barcode and not browse_all:
-        print(
-            "Error: provide --query, --barcode, or --all (unrestricted browse)",
-            file=sys.stderr,
-        )
-        return 2
+        parser.error("provide --query, --barcode, or --all (unrestricted browse)")
 
     sf: ScrapeFilter = {}
     if query:
@@ -283,7 +287,7 @@ async def async_main(args: argparse.Namespace) -> int:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    sys.exit(asyncio.run(async_main(args)))
+    sys.exit(asyncio.run(async_main(args, parser)))
 
 
 if __name__ == "__main__":

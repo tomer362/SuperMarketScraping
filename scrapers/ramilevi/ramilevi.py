@@ -304,13 +304,32 @@ def _to_unified(
     qty_raw: Optional[float] = None
     raw_uom: Optional[str] = None
     if net_content:
+        value_str = str(net_content.get("value") or "").strip()
         try:
-            qty_raw = float(net_content.get("value") or 0) or None
+            if "*" in value_str:
+                # Handle multiplicative notation like '4*140' (4 packs × 140 g each)
+                parts = value_str.split("*", 1)
+                qty_raw = float(parts[0].strip()) * float(parts[1].strip()) or None
+                logger.debug(
+                    "ramilevi: product id=%s name=%r — parsed multiplicative net_content %r → %s",
+                    item.get("id"),
+                    item.get("name"),
+                    value_str,
+                    qty_raw,
+                )
+            else:
+                qty_raw = float(value_str) or None
         except (ValueError, TypeError) as exc:
             logger.warning(
                 "Could not parse net_content value %r: %s",
-                net_content.get("value"),
+                value_str,
                 exc,
+            )
+            logger.debug(
+                "ramilevi: net_content parse failure — product id=%s name=%r full net_content=%r",
+                item.get("id"),
+                item.get("name"),
+                net_content,
             )
             qty_raw = None
         raw_uom = net_content.get("UOM") or None

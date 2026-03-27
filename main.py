@@ -28,7 +28,19 @@ Usage examples
     python3 main.py --supermarkets tivtaam --tivtaam-branches 924 929
     python3 main.py --supermarkets carrefour --carrefour-branches 3003 3014
     python3 main.py --supermarkets yochananof --yochananof-stores s82 s63
-    python3 main.py --supermarkets machsanei --machsanei-branches 836 1587
+    python3 main.py --supermarkets machsanei --machsanei-branches 836
+
+# Scrape a single branch of each chain:
+    python3 main.py --supermarkets tivtaam --tivtaam-branches 924
+    python3 main.py --supermarkets carrefour --carrefour-branches 3014
+    python3 main.py --supermarkets machsanei --machsanei-branches 836
+    python3 main.py --supermarkets ramilevi --ramilevi-stores 1332
+    python3 main.py --supermarkets yochananof --yochananof-stores s82
+    python3 main.py --supermarkets keshet --keshet-branches 2725
+    python3 main.py --supermarkets quik --quik-branches 3264
+    python3 main.py --supermarkets victory --victory-branches 2930
+    python3 main.py --supermarkets ybitan --ybitan-branches 960
+    python3 main.py --supermarkets shufersal  # no branch filter — global catalogue
 
 # List available branches for each chain and exit:
     python3 main.py --list-branches
@@ -55,6 +67,19 @@ from typing import Any, Dict, List, Optional
 
 from scrapers.common import ScrapeFilter, ScrapeResult
 from utils import ColourFormatter, _is_tty
+
+# ---------------------------------------------------------------------------
+# Argument parser helpers
+# ---------------------------------------------------------------------------
+
+
+class _HelpOnErrorParser(argparse.ArgumentParser):
+    """ArgumentParser that prints the full help message before any error."""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        self.print_help(sys.stderr)
+        self.exit(2, f"\nerror: {message}\n")
+
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -916,7 +941,7 @@ _ALL_CHAINS = [
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _HelpOnErrorParser(
         prog="python3 main.py",
         description=(
             "Supermarket scraper — fetches product catalogues from Israeli "
