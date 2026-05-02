@@ -65,7 +65,10 @@ BASE_URL = "https://www.quik.co.il"
 _BARCODE_RE = re.compile(r"/(\d{7,14})-")
 
 # ---------------------------------------------------------------------------
-# Branch list (confirmed via API 2026-03)
+# Branch list (confirmed via API 2026-03).
+# The ZuZ branch-list endpoint may include online branches with ``areas: null``
+# and no product-bearing catalogue categories.  Validation should use a branch
+# confirmed through the appId=4 category-products endpoint.
 # ---------------------------------------------------------------------------
 
 
