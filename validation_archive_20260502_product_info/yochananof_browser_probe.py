@@ -28,6 +28,9 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
 DEFAULT_TERMS = [
     "חלב",
     "ביצים",
@@ -40,7 +43,7 @@ DEFAULT_TERMS = [
 ]
 
 DEFAULT_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-REPORT_PATH = Path("output_dir/validation/yochananof_browser_probe.json")
+REPORT_PATH = PROJECT_ROOT / "output_dir/validation/yochananof_browser_probe.json"
 
 
 class WebSocket:
