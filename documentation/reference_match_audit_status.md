@@ -2,7 +2,7 @@
 
 Generated from `output_dir/validation/reference_match_audit/target_coverage_summary.json`.
 
-Audit generated at: `2026-05-13T05:38:44.625808+00:00`
+Audit generated at: `2026-05-13T05:43:20.142198+00:00`
 
 Reference catalog:
 
@@ -16,12 +16,12 @@ Target coverage:
 |---|---:|---:|---:|---:|
 | `ramilevi` | 18,504 | 4,077 | 20,305 | 16.72% |
 | `yochananof` | 8,533 | 3,910 | 20,472 | 16.04% |
-| `keshet` | 12,281 | 3,419 | 20,963 | 14.02% |
-| `carrefour` | 4,754 | 3,230 | 21,152 | 13.25% |
+| `keshet` | 12,281 | 3,417 | 20,965 | 14.01% |
+| `carrefour` | 4,754 | 3,233 | 21,149 | 13.26% |
 | `machsanei_hashook` | 6,739 | 3,013 | 21,369 | 12.36% |
 | `victory` | 6,093 | 2,725 | 21,657 | 11.18% |
-| `quik` | 4,294 | 2,129 | 22,253 | 8.73% |
-| `ybitan` | 4,560 | 2,109 | 22,273 | 8.65% |
+| `quik` | 4,294 | 2,128 | 22,254 | 8.73% |
+| `ybitan` | 4,560 | 2,107 | 22,275 | 8.64% |
 
 Current investigation notes:
 
