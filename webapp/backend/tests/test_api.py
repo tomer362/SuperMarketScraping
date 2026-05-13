@@ -44,6 +44,36 @@ async def test_search_returns_products(authenticated_client):
 
 
 @pytest.mark.asyncio
+async def test_search_handles_hebrew_apostrophe_variants(authenticated_client):
+    response = await authenticated_client.get('/api/products/search', params={'q': 'קוטג׳'})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['total'] >= 1
+    assert any('קוטג' in product['name'] for product in payload['products'])
+
+
+@pytest.mark.asyncio
+async def test_search_fuzzy_fallback_handles_minor_typos(authenticated_client):
+    response = await authenticated_client.get('/api/products/search', params={'q': 'קוטז'})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['total'] >= 1
+    assert any('קוטג' in product['name'] for product in payload['products'])
+
+
+@pytest.mark.asyncio
+async def test_search_respects_chain_filter(authenticated_client):
+    response = await authenticated_client.get(
+        '/api/products/search',
+        params={'q': 'חלב', 'chains': 'carrefour'},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['products']
+    assert all(product['cheapest_chain'] == 'carrefour' for product in payload['products'])
+
+
+@pytest.mark.asyncio
 async def test_yochananof_enabled_in_catalog_data(authenticated_client):
     response = await authenticated_client.get('/api/chains')
     assert response.status_code == 200

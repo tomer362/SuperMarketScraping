@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from math import inf
 from typing import Any, Iterable, Sequence
 
-from sqlalchemy import case, exists, func, or_, select, update
+from sqlalchemy import and_, case, delete, exists, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -14,6 +15,7 @@ from db import database_backend
 from models import (
     CanonicalProduct,
     CatalogOffer,
+    CatalogOfferStaging,
     CatalogRefreshRun,
     ShoppingList,
     ShoppingListItem,
@@ -22,6 +24,96 @@ from text_utils import build_match_key, build_search_text, normalize_barcode, no
 
 
 ACTIVE_CHAIN_KEYS = tuple(chain.key for chain in iter_active_chains())
+_FUZZY_SEARCH_THRESHOLD = 0.72
+_FUZZY_CANDIDATE_LIMIT = 1200
+
+_OFFER_COPY_COLUMNS = (
+    "canonical_product_id",
+    "refresh_run_id",
+    "chain",
+    "store_id",
+    "store_name",
+    "product_id",
+    "name",
+    "barcode",
+    "price",
+    "regular_price",
+    "sale_price",
+    "discount_percent",
+    "is_weighable",
+    "unit_description",
+    "unit_of_measure",
+    "unit_qty",
+    "unit_qty_si",
+    "unit_dimension",
+    "price_per_base_unit",
+    "image_url",
+    "brand",
+    "manufacturer",
+    "category_ids",
+    "deal",
+    "scraped_at",
+    "is_active",
+    "created_at",
+    "updated_at",
+)
+
+
+def _offer_model(target_table: str):
+    if target_table == "active":
+        return CatalogOffer
+    if target_table == "staging":
+        return CatalogOfferStaging
+    raise ValueError(f"Unsupported offer target table: {target_table}")
+
+
+def _resolve_chain_keys(chain_filter: Sequence[str] | None) -> tuple[str, ...]:
+    if chain_filter is None:
+        return ACTIVE_CHAIN_KEYS
+    requested = {chain.strip() for chain in chain_filter if chain and chain.strip()}
+    if not requested:
+        return tuple()
+    return tuple(chain for chain in ACTIVE_CHAIN_KEYS if chain in requested)
+
+
+def _token_conditions(tokens: Sequence[str]) -> list[Any]:
+    conditions: list[Any] = []
+    for token in tokens:
+        if len(token) < 2:
+            continue
+        conditions.append(CanonicalProduct.search_text.contains(token))
+    return conditions
+
+
+def _score_fuzzy_candidate(query_normalized: str, search_text: str) -> float:
+    if not query_normalized or not search_text:
+        return 0.0
+    if query_normalized in search_text:
+        return 1.0
+
+    query_tokens = [token for token in query_normalized.split() if token]
+    tokens = [token for token in search_text.split() if token]
+    if not query_tokens or not tokens:
+        return SequenceMatcher(None, query_normalized, search_text).ratio()
+
+    token_scores: list[float] = []
+    for query_token in query_tokens:
+        best_score = 0.0
+        for token in tokens:
+            if token[0] != query_token[0]:
+                continue
+            ratio = SequenceMatcher(None, query_token, token).ratio()
+            if len(query_token) >= 3 and token.startswith(query_token[:2]):
+                ratio += 0.08
+            if len(query_token) >= 4 and token.startswith(query_token[:3]):
+                ratio += 0.08
+            best_score = max(best_score, ratio)
+
+        if best_score == 0.0:
+            best_score = max(SequenceMatcher(None, query_token, token).ratio() for token in tokens)
+        token_scores.append(min(1.0, best_score))
+
+    return sum(token_scores) / len(token_scores)
 
 
 def _chunks(values: Sequence[Any], size: int) -> Iterable[Sequence[Any]]:
@@ -114,6 +206,8 @@ async def upsert_catalog_products(
     session: AsyncSession,
     products: list[dict[str, Any]],
     refresh_run_id: int,
+    *,
+    target_table: str = "active",
 ) -> int:
     if not products:
         return 0
@@ -164,8 +258,10 @@ async def upsert_catalog_products(
     else:
         raise RuntimeError(f"Unsupported database backend for upsert: {database_backend}")
 
+    offer_model = _offer_model(target_table)
+
     for batch in _chunks(rows, 500):
-        stmt = dialect_insert(CatalogOffer).values(list(batch))
+        stmt = dialect_insert(offer_model).values(list(batch))
         stmt = stmt.on_conflict_do_update(
             index_elements=["chain", "store_id", "product_id"],
             set_={
@@ -205,13 +301,30 @@ async def deactivate_missing_offers_for_chain(
     chain: str,
     refresh_run_id: int,
     store_ids: set[str],
+    *,
+    target_table: str = "active",
 ) -> None:
+    offer_model = _offer_model(target_table)
     await session.execute(
-        update(CatalogOffer)
-        .where(CatalogOffer.chain == chain)
-        .where(CatalogOffer.store_id.in_(sorted(store_ids)))
-        .where(CatalogOffer.refresh_run_id != refresh_run_id)
+        update(offer_model)
+        .where(offer_model.chain == chain)
+        .where(offer_model.store_id.in_(sorted(store_ids)))
+        .where(offer_model.refresh_run_id != refresh_run_id)
         .values(is_active=False, updated_at=_now_utc())
+    )
+
+
+async def clear_staging_offers(session: AsyncSession) -> None:
+    await session.execute(delete(CatalogOfferStaging))
+
+
+async def replace_active_offers_from_staging(session: AsyncSession) -> None:
+    await session.execute(delete(CatalogOffer))
+    projection = select(
+        *(getattr(CatalogOfferStaging, column) for column in _OFFER_COPY_COLUMNS)
+    )
+    await session.execute(
+        insert(CatalogOffer).from_select(_OFFER_COPY_COLUMNS, projection)
     )
 
 
@@ -290,38 +403,121 @@ def _search_filters(query: str) -> tuple[str, list[Any], Any]:
         (CanonicalProduct.search_text.like(f"{normalized}%"), 1),
         else_=2,
     )
+    tokens = [token for token in normalized.split(" ") if token]
+    token_conditions = _token_conditions(tokens)
+
     if database_backend == "postgresql":
         similarity = func.similarity(CanonicalProduct.search_text, normalized)
-        condition = or_(CanonicalProduct.search_text.contains(normalized), similarity > 0.05)
+        conditions = [CanonicalProduct.search_text.contains(normalized), similarity > 0.05]
+        if token_conditions:
+            conditions.append(and_(*token_conditions))
+        condition = or_(*conditions)
         ordering = [rank, similarity.desc(), CanonicalProduct.id.asc()]
     else:
-        condition = CanonicalProduct.search_text.contains(normalized)
+        conditions = [CanonicalProduct.search_text.contains(normalized)]
+        if token_conditions:
+            conditions.append(and_(*token_conditions))
+        condition = or_(*conditions)
         ordering = [rank, CanonicalProduct.id.asc()]
     return normalized, ordering, condition
 
 
-def _active_offer_exists() -> Any:
+async def _fuzzy_search_products(
+    session: AsyncSession,
+    query: str,
+    normalized: str,
+    limit: int,
+    offset: int,
+    chain_keys: Sequence[str],
+) -> dict[str, Any]:
+    token_fragments: list[str] = []
+    for token in (part for part in normalized.split(" ") if part):
+        if len(token) >= 3:
+            token_fragments.append(token[:3])
+            token_fragments.append(token[:-1])
+        if len(token) >= 2:
+            token_fragments.append(token[:2])
+
+    seen: set[str] = set()
+    ordered_fragments: list[str] = []
+    for fragment in token_fragments:
+        if fragment and fragment not in seen:
+            seen.add(fragment)
+            ordered_fragments.append(fragment)
+
+    candidate_filter = None
+    if ordered_fragments:
+        candidate_filter = or_(
+            *[CanonicalProduct.search_text.contains(fragment) for fragment in ordered_fragments]
+        )
+
+    base_stmt = (
+        select(CanonicalProduct)
+        .where(_active_offer_exists(chain_keys))
+        .where(func.length(CanonicalProduct.normalized_name) > 0)
+        .where(candidate_filter if candidate_filter is not None else True)
+        .order_by(CanonicalProduct.id.asc())
+        .limit(_FUZZY_CANDIDATE_LIMIT)
+    )
+    candidates = list((await session.execute(base_stmt)).scalars().all())
+    if not candidates:
+        return {"query": query, "total": 0, "products": []}
+
+    ranked: list[tuple[float, CanonicalProduct]] = []
+    for candidate in candidates:
+        score = _score_fuzzy_candidate(normalized, candidate.search_text)
+        if score >= _FUZZY_SEARCH_THRESHOLD:
+            ranked.append((score, candidate))
+
+    if not ranked:
+        return {"query": query, "total": 0, "products": []}
+
+    ranked.sort(key=lambda item: (-item[0], item[1].id))
+    total = len(ranked)
+    window = ranked[offset : offset + limit]
+    products = [product for _, product in window]
+    best_offers, chain_counts = await _preview_offer_map(
+        session,
+        [product.id for product in products],
+        chain_keys,
+    )
+    serialized = [
+        serialize_product_preview(product, best_offers[product.id], chain_counts.get(product.id, 0))
+        for product in products
+        if product.id in best_offers
+    ]
+    return {"query": query, "total": total, "products": serialized}
+
+
+def _active_offer_exists(chain_keys: Sequence[str] | None = None) -> Any:
+    effective_chains = _resolve_chain_keys(chain_keys)
+    if not effective_chains:
+        return exists(select(1).where(False))
     return exists(
         select(1)
         .select_from(CatalogOffer)
         .where(CatalogOffer.canonical_product_id == CanonicalProduct.id)
         .where(CatalogOffer.is_active.is_(True))
-        .where(CatalogOffer.chain.in_(ACTIVE_CHAIN_KEYS))
+        .where(CatalogOffer.chain.in_(effective_chains))
     )
 
 
 async def _preview_offer_map(
     session: AsyncSession,
     product_ids: list[int],
+    chain_keys: Sequence[str] | None = None,
 ) -> tuple[dict[int, CatalogOffer], dict[int, int]]:
     if not product_ids:
+        return {}, {}
+    effective_chains = _resolve_chain_keys(chain_keys)
+    if not effective_chains:
         return {}, {}
     offers = (
         await session.execute(
             select(CatalogOffer)
             .where(CatalogOffer.canonical_product_id.in_(product_ids))
             .where(CatalogOffer.is_active.is_(True))
-            .where(CatalogOffer.chain.in_(ACTIVE_CHAIN_KEYS))
+            .where(CatalogOffer.chain.in_(effective_chains))
             .order_by(CatalogOffer.canonical_product_id.asc(), CatalogOffer.price.asc())
         )
     ).scalars()
@@ -368,21 +564,28 @@ async def suggest_products(
     session: AsyncSession,
     query: str,
     limit: int = 8,
+    chain_filter: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     normalized, ordering, condition = _search_filters(query)
     if condition is None:
         return {"query": query, "total": 0, "items": []}
 
+    chain_keys = _resolve_chain_keys(chain_filter)
+    if not chain_keys:
+        return {"query": query, "total": 0, "items": []}
+
     stmt = (
         select(CanonicalProduct)
-        .where(_active_offer_exists())
+        .where(_active_offer_exists(chain_keys))
         .where(condition)
         .order_by(*ordering)
         .limit(limit)
     )
     products = list((await session.execute(stmt)).scalars().all())
     best_offers, chain_counts = await _preview_offer_map(
-        session, [product.id for product in products]
+        session,
+        [product.id for product in products],
+        chain_keys,
     )
 
     items = []
@@ -411,15 +614,31 @@ async def search_products(
     query: str,
     limit: int = 20,
     offset: int = 0,
+    chain_filter: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     normalized, ordering, condition = _search_filters(query)
     if condition is None:
         return {"query": query, "total": 0, "products": []}
 
-    stmt = select(CanonicalProduct).where(_active_offer_exists()).where(condition)
+    chain_keys = _resolve_chain_keys(chain_filter)
+    if not chain_keys:
+        return {"query": query, "total": 0, "products": []}
+
+    stmt = select(CanonicalProduct).where(_active_offer_exists(chain_keys)).where(condition)
     count = (
         await session.execute(select(func.count()).select_from(stmt.subquery()))
     ).scalar_one()
+
+    if not count:
+        return await _fuzzy_search_products(
+            session,
+            query,
+            normalized,
+            limit,
+            offset,
+            chain_keys,
+        )
+
     products = list(
         (
             await session.execute(
@@ -428,7 +647,9 @@ async def search_products(
         ).scalars()
     )
     best_offers, chain_counts = await _preview_offer_map(
-        session, [product.id for product in products]
+        session,
+        [product.id for product in products],
+        chain_keys,
     )
     serialized = [
         serialize_product_preview(product, best_offers[product.id], chain_counts.get(product.id, 0))

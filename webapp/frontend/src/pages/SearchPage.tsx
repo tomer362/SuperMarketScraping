@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { searchProducts } from '../api';
+import { getChains, searchProducts } from '../api';
+import { resolvePreferredChains, subscribePreferredChainsChange } from '../app/chainPreferences';
 import ProductPreviewCard from '../components/ProductPreviewCard';
 import SearchAutocomplete from '../components/SearchAutocomplete';
 
@@ -21,6 +22,31 @@ export default function SearchPage() {
   const [query, setQuery] = useState('');
   const [submittedQuery, setSubmittedQuery] = useState('');
   const [offset, setOffset] = useState(0);
+  const [selectedChains, setSelectedChains] = useState<string[]>([]);
+
+  const chainsQuery = useQuery({ queryKey: ['chains'], queryFn: getChains });
+  const activeChains = useMemo(
+    () => (chainsQuery.data ?? []).filter((chain) => chain.enabled),
+    [chainsQuery.data],
+  );
+
+  useEffect(() => {
+    if (activeChains.length === 0) {
+      setSelectedChains([]);
+      return;
+    }
+    const syncSelection = () => {
+      const availableKeys = activeChains.map((chain) => chain.chain);
+      setSelectedChains(resolvePreferredChains(availableKeys));
+    };
+    syncSelection();
+    return subscribePreferredChainsChange(syncSelection);
+  }, [activeChains]);
+
+  const selectedChainLabels = useMemo(() => {
+    const byKey = new Map(activeChains.map((chain) => [chain.chain, chain.label]));
+    return selectedChains.map((key) => byKey.get(key) ?? key);
+  }, [activeChains, selectedChains]);
 
   const debouncedQuery = useDebouncedValue(query, 250);
   const readyForSearch = submittedQuery.trim().length >= 3;
@@ -30,8 +56,8 @@ export default function SearchPage() {
   }, [submittedQuery]);
 
   const resultsQuery = useQuery({
-    queryKey: ['product-search', submittedQuery, offset],
-    queryFn: () => searchProducts(submittedQuery, 20, offset),
+    queryKey: ['product-search', submittedQuery, offset, selectedChains.join(',')],
+    queryFn: () => searchProducts(submittedQuery, 20, offset, selectedChains),
     enabled: readyForSearch,
   });
 
@@ -52,6 +78,9 @@ export default function SearchPage() {
               <h2 className="mt-2 text-2xl font-black text-slate-900">חפש/י מוצרים להשוואה</h2>
               <p className="mt-2 text-sm leading-6 text-slate-500 sm:text-base">
                 כתבו לפחות 3 תווים כדי לקבל הצעות. לחיצה על חיפוש תציג את כל המוצרים התואמים עם המחיר הזול ביותר לכל מוצר.
+              </p>
+              <p className="mt-2 text-sm text-slate-500">
+                סינון רשתות פעיל מתוך הגדרות: {selectedChainLabels.length.toLocaleString('he-IL')}
               </p>
             </div>
           </div>
@@ -87,8 +116,19 @@ export default function SearchPage() {
 
             <SearchAutocomplete
               query={debouncedQuery}
+              chains={selectedChains}
               onSelect={(productId) => navigate(`/products/${productId}`)}
             />
+
+            {selectedChainLabels.length > 0 && (
+              <div className="flex flex-wrap gap-2 pt-1">
+                {selectedChainLabels.map((label) => (
+                  <span key={label} className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                    {label}
+                  </span>
+                ))}
+              </div>
+            )}
           </form>
         </div>
 

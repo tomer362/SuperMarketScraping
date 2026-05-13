@@ -4,14 +4,15 @@ import { formatCurrency } from '../lib/format';
 
 interface SearchAutocompleteProps {
   query: string;
+  chains?: string[];
   onSelect: (productId: number) => void;
 }
 
-export default function SearchAutocomplete({ query, onSelect }: SearchAutocompleteProps) {
+export default function SearchAutocomplete({ query, chains, onSelect }: SearchAutocompleteProps) {
   const enabled = query.trim().length >= 3;
   const suggestionsQuery = useQuery({
-    queryKey: ['suggestions', query],
-    queryFn: () => getSuggestions(query),
+    queryKey: ['suggestions', query, chains?.join(',') ?? 'all'],
+    queryFn: () => getSuggestions(query, 8, chains),
     enabled,
   });
 

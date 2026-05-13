@@ -27,7 +27,6 @@ export default function AppShell() {
     },
   });
 
-  const activeChains = chainsQuery.data?.filter((chain) => chain.enabled) ?? [];
   const disabledChains = chainsQuery.data?.filter((chain) => !chain.enabled) ?? [];
 
   return (
@@ -100,11 +99,6 @@ export default function AppShell() {
             <span className="rounded-full bg-slate-100 px-3 py-1.5 font-medium text-slate-600">
               מחובר/ת: {user?.username}
             </span>
-            {activeChains.map((chain) => (
-              <span key={chain.chain} className="rounded-full bg-emerald-50 px-3 py-1.5 font-medium text-emerald-700">
-                {chain.label}
-              </span>
-            ))}
           </div>
         </header>
 
@@ -116,7 +110,7 @@ export default function AppShell() {
           <div className="grid grid-cols-3 gap-2 rounded-[30px] border border-slate-200/80 bg-white/95 p-2 shadow-[0_18px_60px_-24px_rgba(15,23,42,0.35)] backdrop-blur">
             <BottomNavItem to="/" label="חיפוש" />
             <BottomNavItem to="/lists" label="רשימות" />
-            <BottomNavItem to="/account" label="חשבון" />
+            <BottomNavItem to="/account" label="הגדרות" />
           </div>
         </nav>
       </div>

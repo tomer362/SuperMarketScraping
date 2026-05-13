@@ -55,16 +55,25 @@ export async function getChains(): Promise<ChainInfo[]> {
   return response.data;
 }
 
-export async function getSuggestions(query: string, limit = 8): Promise<SuggestResult> {
+export async function getSuggestions(
+  query: string,
+  limit = 8,
+  chains?: string[],
+): Promise<SuggestResult> {
   const response = await api.get<SuggestResult>('/search/suggest', {
-    params: { q: query, limit },
+    params: { q: query, limit, chains: chains && chains.length > 0 ? chains.join(',') : undefined },
   });
   return response.data;
 }
 
-export async function searchProducts(query: string, limit = 20, offset = 0): Promise<ProductSearchResult> {
+export async function searchProducts(
+  query: string,
+  limit = 20,
+  offset = 0,
+  chains?: string[],
+): Promise<ProductSearchResult> {
   const response = await api.get<ProductSearchResult>('/products/search', {
-    params: { q: query, limit, offset },
+    params: { q: query, limit, offset, chains: chains && chains.length > 0 ? chains.join(',') : undefined },
   });
   return response.data;
 }

@@ -22,7 +22,10 @@ database_backend = make_url(database_url).get_backend_name()
 
 engine_options: dict[str, object] = {"echo": False, "future": True}
 if database_backend == "sqlite":
-    engine_options["connect_args"] = {"check_same_thread": False}
+    engine_options["connect_args"] = {
+        "check_same_thread": False,
+        "timeout": 30,
+    }
 elif settings.is_vercel:
     engine_options["poolclass"] = NullPool
 else:
@@ -42,6 +45,11 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 
 async def create_tables(*, drop_existing: bool = False) -> None:
     async with engine.begin() as conn:
+        if database_backend == "sqlite":
+            await conn.execute(text("PRAGMA journal_mode=WAL"))
+            await conn.execute(text("PRAGMA synchronous=NORMAL"))
+            await conn.execute(text("PRAGMA busy_timeout=30000"))
+
         if drop_existing:
             await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)

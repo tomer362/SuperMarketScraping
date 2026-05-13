@@ -150,6 +150,45 @@ class CatalogOffer(TimestampMixin, Base):
     canonical_product: Mapped[CanonicalProduct] = relationship(back_populates="offers")
 
 
+class CatalogOfferStaging(TimestampMixin, Base):
+    __tablename__ = "catalog_offers_staging"
+    __table_args__ = (
+        UniqueConstraint("chain", "store_id", "product_id", name="uq_stage_offer_store_product"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    canonical_product_id: Mapped[int] = mapped_column(
+        ForeignKey("canonical_products.id"), index=True, nullable=False
+    )
+    refresh_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("catalog_refresh_runs.id"), index=True
+    )
+    chain: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    store_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    store_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    product_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    barcode: Mapped[str | None] = mapped_column(String(32), index=True)
+    price: Mapped[float] = mapped_column(Float, nullable=False)
+    regular_price: Mapped[float] = mapped_column(Float, nullable=False)
+    sale_price: Mapped[float | None] = mapped_column(Float)
+    discount_percent: Mapped[float | None] = mapped_column(Float)
+    is_weighable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    unit_description: Mapped[str | None] = mapped_column(String(64))
+    unit_of_measure: Mapped[str | None] = mapped_column(String(32))
+    unit_qty: Mapped[float | None] = mapped_column(Float)
+    unit_qty_si: Mapped[float | None] = mapped_column(Float)
+    unit_dimension: Mapped[str | None] = mapped_column(String(32))
+    price_per_base_unit: Mapped[float | None] = mapped_column(Float)
+    image_url: Mapped[str | None] = mapped_column(Text)
+    brand: Mapped[str | None] = mapped_column(String(255))
+    manufacturer: Mapped[str | None] = mapped_column(String(255))
+    category_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    deal: Mapped[dict | None] = mapped_column(JSON)
+    scraped_at: Mapped[str] = mapped_column(String(64), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
 class ShoppingList(TimestampMixin, Base):
     __tablename__ = "shopping_lists"
 

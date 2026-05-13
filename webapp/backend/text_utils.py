@@ -6,12 +6,15 @@ from typing import Any
 
 _NON_TEXT_RE = re.compile(r"[^0-9A-Za-z\u0590-\u05FF]+")
 _SPACE_RE = re.compile(r"\s+")
+_APOSTROPHE_LIKE_CHARS = "'\"`´’‘ʼ\u05f3\u05f4"
+_APOSTROPHE_TRANSLATION = str.maketrans("", "", _APOSTROPHE_LIKE_CHARS)
 
 
 def normalize_text(value: str | None) -> str:
     if not value:
         return ""
-    cleaned = _NON_TEXT_RE.sub(" ", value.casefold())
+    collapsed = value.casefold().translate(_APOSTROPHE_TRANSLATION)
+    cleaned = _NON_TEXT_RE.sub(" ", collapsed)
     return _SPACE_RE.sub(" ", cleaned).strip()
 
 

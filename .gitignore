@@ -19,6 +19,7 @@ build/
 
 # Local browser/test artifacts
 .playwright-mcp/
+.opencode/
 webapp/frontend/playwright-report/
 webapp/frontend/test-results/
 
@@ -26,3 +27,7 @@ webapp/frontend/test-results/
 output_dir/
 output_dir_test/
 *.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+webapp/.env
+webapp/backend/live_backend.log

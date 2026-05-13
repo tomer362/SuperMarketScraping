@@ -74,6 +74,15 @@ logging.basicConfig(
 logger = logging.getLogger("webapp")
 
 
+def _parse_chain_filter(chains: str | None) -> list[str] | None:
+    if not chains:
+        return None
+    requested = [value.strip() for value in chains.split(",") if value.strip()]
+    if not requested:
+        return None
+    return requested
+
+
 async def _refresh_catalog(source: str) -> dict:
     async with async_session_factory() as session:
         result = await run_full_refresh(session, source=source)
@@ -217,9 +226,19 @@ async def chains(session: AsyncSession = Depends(get_session)) -> list[ChainOut]
 async def search_suggest(
     q: str = Query("", min_length=0),
     limit: int = Query(8, ge=1, le=20),
+    chains: str | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
 ) -> SuggestResultOut:
-    return SuggestResultOut(**(await suggest_products(session, q, limit=limit)))
+    return SuggestResultOut(
+        **(
+            await suggest_products(
+                session,
+                q,
+                limit=limit,
+                chain_filter=_parse_chain_filter(chains),
+            )
+        )
+    )
 
 
 @app.get("/api/products/search", response_model=ProductSearchResultOut, tags=["Search"])
@@ -227,9 +246,20 @@ async def product_search(
     q: str = Query("", min_length=0),
     limit: int = Query(20, ge=1, le=50),
     offset: int = Query(0, ge=0),
+    chains: str | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
 ) -> ProductSearchResultOut:
-    return ProductSearchResultOut(**(await search_products(session, q, limit=limit, offset=offset)))
+    return ProductSearchResultOut(
+        **(
+            await search_products(
+                session,
+                q,
+                limit=limit,
+                offset=offset,
+                chain_filter=_parse_chain_filter(chains),
+            )
+        )
+    )
 
 
 @app.get("/api/products/{product_id}", response_model=ProductDetailOut, tags=["Products"])

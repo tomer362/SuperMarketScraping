@@ -14,7 +14,11 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from catalog_service import deactivate_missing_offers_for_chain, upsert_catalog_products
+from catalog_service import (
+    clear_staging_offers,
+    replace_active_offers_from_staging,
+    upsert_catalog_products,
+)
 from chains import ChainDefinition, iter_active_chains
 from models import CatalogRefreshRun
 from scrapers.deal_validation import validate_products_deal_contract
@@ -74,6 +78,9 @@ async def run_full_refresh(
     session.add(run)
     await session.flush()
 
+    await clear_staging_offers(session)
+    await session.commit()
+
     tasks = [asyncio.create_task(_run_chain(chain), name=chain.key) for chain in chains]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -92,17 +99,15 @@ async def run_full_refresh(
         if errors:
             all_errors.extend(f"{chain_key}: {error}" for error in errors)
         if products:
-            upserted = await upsert_catalog_products(session, products, run.id)
+            upserted = await upsert_catalog_products(
+                session,
+                products,
+                run.id,
+                target_table="staging",
+            )
             total_upserted += upserted
-            store_ids = {str(product.get("store_id", "")) for product in products}
-            if store_ids:
-                await deactivate_missing_offers_for_chain(
-                    session,
-                    chain_key,
-                    run.id,
-                    store_ids,
-                )
             chains_scraped.append(chain_key)
+            await session.commit()
         else:
             chains_failed.append(chain_key)
             if not errors:
@@ -113,7 +118,16 @@ async def run_full_refresh(
     run.products_upserted = total_upserted
     run.errors = all_errors
     run.finished_at = datetime.now(timezone.utc)
-    run.status = "done" if chains_scraped else "failed"
+
+    all_chains_succeeded = len(run.chains_failed) == 0 and len(chains_scraped) == len(chains)
+    if all_chains_succeeded:
+        await replace_active_offers_from_staging(session)
+        await clear_staging_offers(session)
+        run.status = "done"
+    else:
+        await clear_staging_offers(session)
+        run.status = "failed"
+        run.errors.append("swap_skipped: staged catalog not activated because one or more chains failed")
 
     return {
         "run_id": run.id,

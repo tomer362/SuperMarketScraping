@@ -8,6 +8,19 @@ import { renderWithQueryClient } from './render';
 
 describe('SearchPage', () => {
   it('shows the 3-character guard before searching', async () => {
+    vi.spyOn(api, 'getChains').mockResolvedValue([
+      {
+        chain: 'carrefour',
+        label: 'קרפור',
+        enabled: true,
+        status: 'active',
+        unavailable_reason: null,
+        accent: 'blue',
+        product_count: 10,
+      },
+    ]);
+    vi.spyOn(api, 'getSuggestions').mockResolvedValue({ query: 'חל', total: 0, items: [] });
+
     renderWithQueryClient(
       <MemoryRouter>
         <SearchPage />
@@ -20,6 +33,17 @@ describe('SearchPage', () => {
   });
 
   it('renders search results after submit', async () => {
+    vi.spyOn(api, 'getChains').mockResolvedValue([
+      {
+        chain: 'carrefour',
+        label: 'קרפור',
+        enabled: true,
+        status: 'active',
+        unavailable_reason: null,
+        accent: 'blue',
+        product_count: 10,
+      },
+    ]);
     vi.spyOn(api, 'searchProducts').mockResolvedValue({
       query: 'חלב',
       total: 1,
@@ -59,5 +83,8 @@ describe('SearchPage', () => {
 
     expect(await screen.findByText('חלב תנובה 3% 1 ליטר')).toBeInTheDocument();
     await waitFor(() => expect(api.searchProducts).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(api.searchProducts).toHaveBeenCalledWith('חלב', 20, 0, ['carrefour']),
+    );
   });
 });
