@@ -1,0 +1,90 @@
+================================================================================
+                     SUPERMARKET SCRAPERS VALIDATION
+                            2026-05-02 13:26:53
+================================================================================
+
+OVERALL RESULTS
+───────────────────────────────────────────────────────────────────────────────
+  Tested:     10 scrapers
+  Passed:      7 ✅
+  Failed:      3 ❌
+  Total Products:  43,413
+  Total Time:      468 seconds (7.8 minutes)
+
+PASSED SCRAPERS (7)
+───────────────────────────────────────────────────────────────────────────────
+  1. tivtaam          ✅  17,915 products   Stor.ai platform
+  2. carrefour        ✅   4,866 products   Stor.ai platform
+  3. machsanei        ✅   7,018 products   ZuZ platform (1 branch)
+  4. victory          ✅   6,094 products   ZuZ platform
+  5. ramilevi         ✅   1,422 products   Node.js/Elasticsearch
+  6. shufersal        ✅     894 products   Custom JSON API
+  7. keshet           ✅     102 products   ZuZ platform
+
+FAILED SCRAPERS (3) — NEED INVESTIGATION
+───────────────────────────────────────────────────────────────────────────────
+  1. yochananof       ❌       0 products   Error: 403 Forbidden
+                                           Root: API access blocked
+                                           Action: Add headers/auth
+
+  2. quik             ❌       0 products   Error: No products returned
+                                           Root: API issue or category empty
+                                           Action: Test with Playwright
+
+  3. ybitan           ❌       0 products   Error: No products returned
+                                           Root: API issue or category empty
+                                           Action: Test with Playwright
+
+PLATFORM SUMMARY
+───────────────────────────────────────────────────────────────────────────────
+  Stor.ai    (tivtaam, carrefour)           2/2 working  ✅
+  ZuZ        (machsanei, keshet, victory)   4/6 working  ⚠️
+  Custom     (shufersal, ramilevi)          2/2 working  ✅
+  GraphQL    (yochananof)                   0/1 working  ❌
+
+TOP PERFORMERS
+───────────────────────────────────────────────────────────────────────────────
+  By Product Count:
+    #1  tivtaam              17,915 products  (41% of total)
+    #2  machsanei_hashook     7,018 products
+    #3  victory               6,094 products
+
+  By Speed:
+    #1  shufersal            16.32 seconds
+    #2  keshet               13.13 seconds
+    #3  yochananof            0.68 seconds (failed)
+
+RECOMMENDATIONS
+───────────────────────────────────────────────────────────────────────────────
+  HIGH PRIORITY:
+    1. Fix yochananof 403 Forbidden (add browser headers)
+    2. Debug quik & ybitan (0 products)
+    3. Use Playwright visual diagnosis
+
+  MEDIUM PRIORITY:
+    4. Fix net_content parsing in ZuZ scrapers
+    5. Set up weekly monitoring
+
+  LOW PRIORITY:
+    6. Optimize tivtaam/carrefour execution time
+    7. Performance tuning for batch sizes
+
+DOCUMENTATION IN THIS ARCHIVE
+───────────────────────────────────────────────────────────────────────────────
+  README.md                  ← Start here (overview)
+  VALIDATION_REPORT.md       ← Detailed results & diagnosis
+  SCRAPER_REFERENCE.md       ← Quick lookup by status/platform
+  validate_scrapers.py       ← Script used for validation
+  ARCHITECTURE.md            ← Full project architecture
+
+NEXT STEPS
+───────────────────────────────────────────────────────────────────────────────
+  1. Read VALIDATION_REPORT.md for detailed analysis
+  2. Run Playwright diagnostics: python3 validate_scrapers.py --playwright
+  3. Fix failing scrapers and re-run
+  4. Schedule weekly validation runs
+
+================================================================================
+                 Archive: validation_archive_20260502_132940
+                    Status: Ready for review & action
+================================================================================

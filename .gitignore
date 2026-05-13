@@ -1,5 +1,6 @@
 results.json
 supermarket.log
+.DS_Store
 
 __pycache__/
 *.pyc
@@ -15,3 +16,13 @@ dist/
 build/
 *.egg-info/
 .python-version
+
+# Local browser/test artifacts
+.playwright-mcp/
+webapp/frontend/playwright-report/
+webapp/frontend/test-results/
+
+# Generated scraper outputs and local databases
+output_dir/
+output_dir_test/
+*.sqlite3
