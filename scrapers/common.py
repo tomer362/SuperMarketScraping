@@ -24,7 +24,21 @@ import re
 import ssl
 import sys
 from datetime import datetime, timezone
-from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple, TypedDict
+from typing import (
+    Any,
+    Callable,
+    Coroutine,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    TypedDict,
+)
+
+try:
+    from typing import NotRequired
+except ImportError:  # Python 3.10 compatibility
+    from typing_extensions import NotRequired
 
 logger = logging.getLogger("scrapers.common")
 
@@ -268,6 +282,7 @@ class ScrapeResult(TypedDict):
     stores_scraped: int
     products_total: int
     products_by_store: Dict[str, List[UnifiedProduct]]
+    compare_row_details_by_product: NotRequired[Dict[str, Dict[str, Any]]]
     scraped_at: str  # ISO-8601 UTC session start
     duration_seconds: float
     errors: List[str]

@@ -1,51 +1,143 @@
 import axios from 'axios';
 import type {
-  CartCompareResult,
-  CartItemInput,
+  AuthPayload,
+  CatalogStatus,
   ChainInfo,
-  Product,
-  ScrapeStatus,
-  SearchResult,
+  MessageResponse,
+  ProductDetail,
+  ProductSearchResult,
+  RefreshTriggerResult,
+  ShoppingListComparison,
+  ShoppingListDetail,
+  ShoppingListSummary,
+  SuggestResult,
 } from './types';
 
 const api = axios.create({
   baseURL: '/api',
   headers: { 'Content-Type': 'application/json' },
+  withCredentials: true,
 });
 
-export async function searchProducts(
-  q: string,
-  limit = 50,
-  offset = 0,
-  chain?: string
-): Promise<SearchResult> {
-  const params: Record<string, string | number> = { q, limit, offset };
-  if (chain) params.chain = chain;
-  const res = await api.get<SearchResult>('/search', { params });
-  return res.data;
+export function isApiError(error: unknown): error is { response?: { data?: { detail?: string } } } {
+  return typeof error === 'object' && error !== null;
 }
 
-export async function getProduct(id: number): Promise<Product> {
-  const res = await api.get<Product>(`/product/${id}`);
-  return res.data;
+export function getApiErrorMessage(error: unknown, fallback: string): string {
+  if (isApiError(error)) {
+    return error.response?.data?.detail ?? fallback;
+  }
+  return fallback;
 }
 
-export async function compareCart(items: CartItemInput[]): Promise<CartCompareResult> {
-  const res = await api.post<CartCompareResult>('/cart/compare', items);
-  return res.data;
+export async function register(username: string, password: string): Promise<AuthPayload> {
+  const response = await api.post<AuthPayload>('/auth/register', { username, password });
+  return response.data;
+}
+
+export async function login(username: string, password: string): Promise<AuthPayload> {
+  const response = await api.post<AuthPayload>('/auth/login', { username, password });
+  return response.data;
+}
+
+export async function logout(): Promise<MessageResponse> {
+  const response = await api.post<MessageResponse>('/auth/logout');
+  return response.data;
+}
+
+export async function getCurrentUser(): Promise<AuthPayload> {
+  const response = await api.get<AuthPayload>('/auth/me');
+  return response.data;
 }
 
 export async function getChains(): Promise<ChainInfo[]> {
-  const res = await api.get<{ chains: ChainInfo[] }>('/chains');
-  return res.data.chains;
+  const response = await api.get<ChainInfo[]>('/chains');
+  return response.data;
 }
 
-export async function getScrapeStatus(): Promise<ScrapeStatus> {
-  const res = await api.get<ScrapeStatus>('/scrape/status');
-  return res.data;
+export async function getSuggestions(query: string, limit = 8): Promise<SuggestResult> {
+  const response = await api.get<SuggestResult>('/search/suggest', {
+    params: { q: query, limit },
+  });
+  return response.data;
 }
 
-export async function triggerScrape(): Promise<unknown> {
-  const res = await api.post('/scrape/trigger');
-  return res.data;
+export async function searchProducts(query: string, limit = 20, offset = 0): Promise<ProductSearchResult> {
+  const response = await api.get<ProductSearchResult>('/products/search', {
+    params: { q: query, limit, offset },
+  });
+  return response.data;
+}
+
+export async function getProductDetail(productId: number): Promise<ProductDetail> {
+  const response = await api.get<ProductDetail>(`/products/${productId}`);
+  return response.data;
+}
+
+export async function getLists(): Promise<ShoppingListSummary[]> {
+  const response = await api.get<ShoppingListSummary[]>('/lists');
+  return response.data;
+}
+
+export async function createList(name: string): Promise<ShoppingListDetail> {
+  const response = await api.post<ShoppingListDetail>('/lists', { name });
+  return response.data;
+}
+
+export async function getList(listId: number): Promise<ShoppingListDetail> {
+  const response = await api.get<ShoppingListDetail>(`/lists/${listId}`);
+  return response.data;
+}
+
+export async function renameList(listId: number, name: string): Promise<ShoppingListDetail> {
+  const response = await api.patch<ShoppingListDetail>(`/lists/${listId}`, { name });
+  return response.data;
+}
+
+export async function deleteList(listId: number): Promise<MessageResponse> {
+  const response = await api.delete<MessageResponse>(`/lists/${listId}`);
+  return response.data;
+}
+
+export async function addListItem(
+  listId: number,
+  canonicalProductId: number,
+  quantity = 1,
+): Promise<ShoppingListDetail> {
+  const response = await api.post<ShoppingListDetail>(`/lists/${listId}/items`, {
+    canonical_product_id: canonicalProductId,
+    quantity,
+  });
+  return response.data;
+}
+
+export async function updateListItem(
+  listId: number,
+  itemId: number,
+  quantity: number,
+): Promise<ShoppingListDetail> {
+  const response = await api.patch<ShoppingListDetail>(`/lists/${listId}/items/${itemId}`, {
+    quantity,
+  });
+  return response.data;
+}
+
+export async function deleteListItem(listId: number, itemId: number): Promise<ShoppingListDetail> {
+  const response = await api.delete<ShoppingListDetail>(`/lists/${listId}/items/${itemId}`);
+  return response.data;
+}
+
+export async function compareList(listId: number): Promise<ShoppingListComparison> {
+  const response = await api.get<ShoppingListComparison>(`/lists/${listId}/comparison`);
+  return response.data;
+}
+
+export async function getCatalogStatus(): Promise<CatalogStatus> {
+  const response = await api.get<CatalogStatus>('/catalog/status');
+  return response.data;
+}
+
+export async function triggerCatalogRefresh(): Promise<RefreshTriggerResult> {
+  const response = await api.post<RefreshTriggerResult>('/catalog/refresh');
+  return response.data;
 }

@@ -1,0 +1,17 @@
+{
+  "installCommand": "cd frontend && npm install",
+  "buildCommand": "cd frontend && npm run build",
+  "outputDirectory": "frontend/dist",
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index.py" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ],
+  "crons": [
+    { "path": "/api/catalog/refresh/cron", "schedule": "0 2 * * *" }
+  ],
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 300
+    }
+  }
+}

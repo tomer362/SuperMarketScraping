@@ -1,32 +1,70 @@
-"""
-webapp/backend/main.py
-======================
-FastAPI application: product search + shopping list comparison.
-
-Environment variables (set in .env):
-  DATABASE_URL          - PostgreSQL connection string (asyncpg)
-  SCRAPE_INTERVAL_HOURS - Hours between automatic scrape runs (default: 6)
-"""
-
 from __future__ import annotations
 
 import logging
-import os
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from sqlalchemy import func, select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db import Product, ScrapeRun, create_tables, get_session
-from scheduler import scheduler
+from auth import (
+    create_default_list_for_user,
+    create_session_cookie,
+    destroy_session_by_request,
+    get_current_user,
+    hash_password,
+    normalize_username,
+    validate_password,
+    validate_username,
+    verify_password,
+)
+from catalog_service import (
+    catalog_is_fresh,
+    compare_shopping_list,
+    get_user_list,
+    get_user_list_with_items,
+    get_user_lists,
+    latest_refresh_run,
+    load_product_chain_offers,
+    load_product_detail,
+    public_chain_statuses,
+    search_products,
+    serialize_refresh_run,
+    serialize_shopping_list_detail,
+    serialize_shopping_list_summary,
+    suggest_products,
+)
+from db import async_session_factory, create_tables, dispose_engine, get_session
+from models import CanonicalProduct, ShoppingList, ShoppingListItem, User
+from schemas import (
+    AuthPayload,
+    CatalogStatusOut,
+    ChainOfferOut,
+    ChainOut,
+    LoginIn,
+    MessageOut,
+    ProductDetailOut,
+    ProductSearchResultOut,
+    RefreshTriggerOut,
+    RegisterIn,
+    ShoppingListComparisonOut,
+    ShoppingListCreateIn,
+    ShoppingListDetailOut,
+    ShoppingListItemCreateIn,
+    ShoppingListItemUpdateIn,
+    ShoppingListSummaryOut,
+    ShoppingListUpdateIn,
+    SuggestResultOut,
+    UserOut,
+)
+from scraper_runner import run_full_refresh
+from scheduler import RefreshScheduler
+from seed import seed_demo_catalog
+from settings import get_settings
+
+
+settings = get_settings()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,411 +74,390 @@ logging.basicConfig(
 logger = logging.getLogger("webapp")
 
 
-# ---------------------------------------------------------------------------
-# Lifespan — DB init + scheduler start
-# ---------------------------------------------------------------------------
+async def _refresh_catalog(source: str) -> dict:
+    async with async_session_factory() as session:
+        result = await run_full_refresh(session, source=source)
+        await session.commit()
+        return result
+
+
+async def _load_list_detail_for_user(
+    session: AsyncSession,
+    user: User,
+    shopping_list_id: int,
+) -> ShoppingListDetailOut:
+    shopping_list = await get_user_list(session, user.id, shopping_list_id)
+    if not shopping_list:
+        raise HTTPException(status_code=404, detail="Shopping list not found")
+    return ShoppingListDetailOut(
+        **(await serialize_shopping_list_detail(session, shopping_list))
+    )
+
+
+def _require_refresh_auth(authorization: str | None) -> None:
+    if not settings.refresh_auth_token:
+        return
+    expected = f"Bearer {settings.refresh_auth_token}"
+    if authorization != expected:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+
+scheduler = RefreshScheduler(settings.scrape_interval_hours, _refresh_catalog)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("Starting up — creating DB tables…")
-    await create_tables()
-    logger.info("DB ready. Starting scrape scheduler…")
-    await scheduler.start()
-    yield
-    logger.info("Shutting down scrape scheduler…")
-    await scheduler.stop()
+async def lifespan(_: FastAPI):
+    await create_tables(drop_existing=settings.reset_test_db_on_start)
+    if settings.seed_test_data:
+        async with async_session_factory() as session:
+            await seed_demo_catalog(session)
+            await session.commit()
+    if settings.enable_scheduler:
+        await scheduler.start()
+    if settings.auto_refresh_on_start and not settings.seed_test_data:
+        async with async_session_factory() as session:
+            if not await catalog_is_fresh(session, settings.scrape_interval_hours):
+                await _refresh_catalog("startup")
+    try:
+        yield
+    finally:
+        if settings.enable_scheduler:
+            await scheduler.stop()
+        await dispose_engine()
 
 
 app = FastAPI(
     title="SuperMarket Price Searcher",
-    description="Fuzzy product search and shopping list comparison across Israeli supermarkets.",
-    version="1.0.0",
+    description="Mobile-first grocery comparison web app backend.",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# ---------------------------------------------------------------------------
-# Pydantic response models
-# ---------------------------------------------------------------------------
-
-
-class DealOut(BaseModel):
-    has_deal: bool
-    deal_type: Optional[str] = None
-    deal_description: Optional[str] = None
-    deal_price: Optional[float] = None
-    deal_min_qty: Optional[int] = None
-    deal_price_per_unit: Optional[float] = None
-    price_per_base_unit: Optional[float] = None
-    price_per_base_unit_deal: Optional[float] = None
-
-    model_config = {"from_attributes": True}
-
-
-class ProductOut(BaseModel):
-    id: int
-    chain: str
-    store_id: str
-    store_name: str
-    product_id: str
-    name: str
-    barcode: Optional[str] = None
-    price: float
-    regular_price: float
-    sale_price: Optional[float] = None
-    discount_percent: Optional[float] = None
-    is_weighable: bool
-    unit_description: Optional[str] = None
-    unit_of_measure: Optional[str] = None
-    unit_qty: Optional[float] = None
-    unit_qty_si: Optional[float] = None
-    unit_dimension: Optional[str] = None
-    price_per_base_unit: Optional[float] = None
-    image_url: Optional[str] = None
-    brand: Optional[str] = None
-    manufacturer: Optional[str] = None
-    deal: Optional[Dict[str, Any]] = None
-    scraped_at: str
-
-    model_config = {"from_attributes": True}
-
-
-class SearchResult(BaseModel):
-    query: str
-    total: int
-    products: List[ProductOut]
-
-
-class CartItem(BaseModel):
-    product_id: int  # DB primary key
-
-
-class StoreCartResult(BaseModel):
-    chain: str
-    store_id: str
-    store_name: str
-    total_price: float
-    items: List[Dict[str, Any]]  # {product_id, name, price, found: bool}
-    missing_products: List[str]  # names of products not found at this store
-    has_missing: bool
-
-
-class CartCompareResult(BaseModel):
-    cart_items: List[str]  # product names from reference
-    stores: List[StoreCartResult]
-
-
-class ScrapeStatus(BaseModel):
-    scheduler_running: bool
-    interval_hours: float
-    last_run: Optional[Dict[str, Any]] = None
-
-
-# ---------------------------------------------------------------------------
-# Helper: fuzzy product search
-# ---------------------------------------------------------------------------
-
-
-async def _search_products(
-    session: AsyncSession,
-    query: str,
-    limit: int = 50,
-    offset: int = 0,
-    chain: Optional[str] = None,
-) -> tuple[int, list[Product]]:
-    """Fuzzy search products by name using pg_trgm similarity."""
-    base = select(Product)
-    count_base = select(func.count()).select_from(Product)
-
-    if query:
-        # Use similarity threshold for fuzzy matching
-        condition = text("similarity(name, :q) > 0.1 OR name ILIKE :like").bindparams(
-            q=query, like=f"%{query}%"
+@app.post("/api/auth/register", response_model=AuthPayload, tags=["Auth"])
+async def register(
+    payload: RegisterIn,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+) -> AuthPayload:
+    username = validate_username(payload.username)
+    validate_password(payload.password)
+    normalized_username = normalize_username(username)
+    existing = (
+        await session.execute(
+            select(User).where(User.username_normalized == normalized_username)
         )
-        base = base.where(condition)
-        count_base = count_base.where(condition)
+    ).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=409, detail="Username already exists")
 
-    if chain:
-        base = base.where(Product.chain == chain)
-        count_base = count_base.where(Product.chain == chain)
+    user = User(
+        username=username,
+        username_normalized=normalized_username,
+        password_hash=hash_password(payload.password),
+    )
+    session.add(user)
+    await session.flush()
+    await create_default_list_for_user(session, user)
+    await create_session_cookie(response, session, user)
+    await session.commit()
+    return AuthPayload(user=UserOut(id=user.id, username=user.username, created_at=user.created_at))
 
-    # Order: exact/most-similar first, then cheapest
-    if query:
-        base = base.order_by(
-            text("similarity(name, :q) DESC").bindparams(q=query),
-            Product.price.asc(),
+
+@app.post("/api/auth/login", response_model=AuthPayload, tags=["Auth"])
+async def login(
+    payload: LoginIn,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+) -> AuthPayload:
+    normalized_username = normalize_username(payload.username)
+    user = (
+        await session.execute(
+            select(User).where(User.username_normalized == normalized_username)
         )
-    else:
-        base = base.order_by(Product.price.asc())
+    ).scalar_one_or_none()
+    if user is None or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    total_result = await session.execute(count_base)
-    total = total_result.scalar() or 0
-
-    base = base.offset(offset).limit(limit)
-    result = await session.execute(base)
-    products = list(result.scalars().all())
-
-    return total, products
+    await create_session_cookie(response, session, user)
+    await session.commit()
+    return AuthPayload(user=UserOut(id=user.id, username=user.username, created_at=user.created_at))
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
+@app.post("/api/auth/logout", response_model=MessageOut, tags=["Auth"])
+async def logout(
+    request: Request,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+) -> MessageOut:
+    await destroy_session_by_request(request, session, response)
+    await session.commit()
+    return MessageOut(detail="Logged out")
 
 
-@app.get("/api/search", response_model=SearchResult, tags=["Search"])
-async def search(
-    q: str = Query("", description="Product name (fuzzy search)"),
-    limit: int = Query(50, ge=1, le=200),
+@app.get("/api/auth/me", response_model=AuthPayload, tags=["Auth"])
+async def me(user: User = Depends(get_current_user)) -> AuthPayload:
+    return AuthPayload(user=UserOut(id=user.id, username=user.username, created_at=user.created_at))
+
+
+@app.get("/api/chains", response_model=list[ChainOut], tags=["Meta"])
+async def chains(session: AsyncSession = Depends(get_session)) -> list[ChainOut]:
+    return [ChainOut(**chain) for chain in await public_chain_statuses(session)]
+
+
+@app.get("/api/search/suggest", response_model=SuggestResultOut, tags=["Search"])
+async def search_suggest(
+    q: str = Query("", min_length=0),
+    limit: int = Query(8, ge=1, le=20),
+    session: AsyncSession = Depends(get_session),
+) -> SuggestResultOut:
+    return SuggestResultOut(**(await suggest_products(session, q, limit=limit)))
+
+
+@app.get("/api/products/search", response_model=ProductSearchResultOut, tags=["Search"])
+async def product_search(
+    q: str = Query("", min_length=0),
+    limit: int = Query(20, ge=1, le=50),
     offset: int = Query(0, ge=0),
-    chain: Optional[str] = Query(None, description="Filter by chain name"),
     session: AsyncSession = Depends(get_session),
-) -> SearchResult:
-    """
-    Fuzzy search for products across all supermarkets.
-
-    Results are ordered by similarity to query (most relevant first), then
-    by price ascending (cheapest first within each similarity tier).
-    """
-    if not q and not chain:
-        # Return a sampling of cheap products when no query
-        stmt = select(Product).order_by(Product.price.asc()).limit(limit).offset(offset)
-        count_stmt = select(func.count()).select_from(Product)
-        total = (await session.execute(count_stmt)).scalar() or 0
-        rows = list((await session.execute(stmt)).scalars().all())
-        return SearchResult(
-            query=q,
-            total=total,
-            products=[ProductOut.model_validate(r) for r in rows],
-        )
-
-    total, products = await _search_products(
-        session, q, limit=limit, offset=offset, chain=chain
-    )
-    return SearchResult(
-        query=q,
-        total=total,
-        products=[ProductOut.model_validate(p) for p in products],
-    )
+) -> ProductSearchResultOut:
+    return ProductSearchResultOut(**(await search_products(session, q, limit=limit, offset=offset)))
 
 
-@app.get("/api/product/{product_db_id}", response_model=ProductOut, tags=["Search"])
-async def get_product(
-    product_db_id: int,
+@app.get("/api/products/{product_id}", response_model=ProductDetailOut, tags=["Products"])
+async def product_detail(
+    product_id: int,
     session: AsyncSession = Depends(get_session),
-) -> ProductOut:
-    """Fetch a single product by its database ID."""
-    product = await session.get(Product, product_db_id)
+) -> ProductDetailOut:
+    detail = await load_product_detail(session, product_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return ProductDetailOut(**detail)
+
+
+@app.get("/api/products/{product_id}/offers", response_model=list[ChainOfferOut], tags=["Products"])
+async def product_offers(
+    product_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> list[ChainOfferOut]:
+    offers = await load_product_chain_offers(session, product_id)
+    if not offers:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return [ChainOfferOut(**offer) for offer in offers]
+
+
+@app.get("/api/lists", response_model=list[ShoppingListSummaryOut], tags=["Lists"])
+async def list_lists(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[ShoppingListSummaryOut]:
+    lists = await get_user_lists(session, user.id)
+    return [
+        ShoppingListSummaryOut(**(await serialize_shopping_list_summary(session, shopping_list)))
+        for shopping_list in lists
+    ]
+
+
+@app.post("/api/lists", response_model=ShoppingListDetailOut, tags=["Lists"])
+async def create_list(
+    payload: ShoppingListCreateIn,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ShoppingListDetailOut:
+    shopping_list = ShoppingList(user_id=user.id, name=payload.name.strip())
+    session.add(shopping_list)
+    await session.flush()
+    shopping_list_id = shopping_list.id
+    await session.commit()
+    return await _load_list_detail_for_user(session, user, shopping_list_id)
+
+
+@app.get("/api/lists/{shopping_list_id}", response_model=ShoppingListDetailOut, tags=["Lists"])
+async def get_list(
+    shopping_list_id: int,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ShoppingListDetailOut:
+    return await _load_list_detail_for_user(session, user, shopping_list_id)
+
+
+@app.patch("/api/lists/{shopping_list_id}", response_model=ShoppingListDetailOut, tags=["Lists"])
+async def update_list(
+    shopping_list_id: int,
+    payload: ShoppingListUpdateIn,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ShoppingListDetailOut:
+    shopping_list = await get_user_list(session, user.id, shopping_list_id)
+    if not shopping_list:
+        raise HTTPException(status_code=404, detail="Shopping list not found")
+    shopping_list.name = payload.name.strip()
+    await session.commit()
+    return await _load_list_detail_for_user(session, user, shopping_list_id)
+
+
+@app.delete("/api/lists/{shopping_list_id}", response_model=MessageOut, tags=["Lists"])
+async def delete_list(
+    shopping_list_id: int,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> MessageOut:
+    shopping_list = await get_user_list(session, user.id, shopping_list_id)
+    if not shopping_list:
+        raise HTTPException(status_code=404, detail="Shopping list not found")
+    await session.delete(shopping_list)
+    await session.commit()
+    return MessageOut(detail="Shopping list deleted")
+
+
+@app.post("/api/lists/{shopping_list_id}/items", response_model=ShoppingListDetailOut, tags=["Lists"])
+async def add_list_item(
+    shopping_list_id: int,
+    payload: ShoppingListItemCreateIn,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ShoppingListDetailOut:
+    shopping_list = await get_user_list(session, user.id, shopping_list_id)
+    if not shopping_list:
+        raise HTTPException(status_code=404, detail="Shopping list not found")
+    product = await session.get(CanonicalProduct, payload.canonical_product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-    return ProductOut.model_validate(product)
 
-
-@app.post("/api/cart/compare", response_model=CartCompareResult, tags=["Shopping List"])
-async def compare_cart(
-    items: List[CartItem],
-    session: AsyncSession = Depends(get_session),
-) -> CartCompareResult:
-    """
-    Compare a shopping cart across all supermarkets.
-
-    For each product in the cart, finds its equivalent at every store
-    (matched by barcode first, then product_id+chain, then name similarity).
-    Returns stores sorted cheapest to most expensive total, with warnings
-    when a product is unavailable at a store.
-    """
-    if not items:
-        raise HTTPException(status_code=400, detail="Cart is empty")
-
-    # Load the reference products
-    ref_products: list[Product] = []
-    for item in items:
-        p = await session.get(Product, item.product_id)
-        if not p:
-            raise HTTPException(
-                status_code=404, detail=f"Product {item.product_id} not found"
-            )
-        ref_products.append(p)
-
-    cart_names = [p.name for p in ref_products]
-
-    # Find all distinct (chain, store_id, store_name) combos in DB
-    stores_stmt = select(Product.chain, Product.store_id, Product.store_name).distinct()
-    stores_rows = list((await session.execute(stores_stmt)).all())
-    # Deduplicate
-    seen = set()
-    stores = []
-    for row in stores_rows:
-        key = (row.chain, row.store_id)
-        if key not in seen:
-            seen.add(key)
-            stores.append(
-                {
-                    "chain": row.chain,
-                    "store_id": row.store_id,
-                    "store_name": row.store_name,
-                }
-            )
-
-    store_results: list[StoreCartResult] = []
-
-    for store in stores:
-        chain = store["chain"]
-        store_id = store["store_id"]
-        store_name = store["store_name"]
-
-        total_price = 0.0
-        items_out = []
-        missing = []
-
-        for ref in ref_products:
-            found_product: Optional[Product] = None
-
-            # 1. Match by barcode (most reliable)
-            if ref.barcode:
-                stmt = (
-                    select(Product)
-                    .where(
-                        Product.chain == chain,
-                        Product.store_id == store_id,
-                        Product.barcode == ref.barcode,
-                    )
-                    .limit(1)
-                )
-                row = (await session.execute(stmt)).scalar_one_or_none()
-                if row:
-                    found_product = row
-
-            # 2. Match by same chain+product_id
-            if not found_product:
-                stmt = (
-                    select(Product)
-                    .where(
-                        Product.chain == chain,
-                        Product.store_id == store_id,
-                        Product.product_id == ref.product_id,
-                    )
-                    .limit(1)
-                )
-                row = (await session.execute(stmt)).scalar_one_or_none()
-                if row:
-                    found_product = row
-
-            # 3. Fuzzy name match within this store
-            if not found_product:
-                stmt = (
-                    select(Product)
-                    .where(
-                        Product.chain == chain,
-                        Product.store_id == store_id,
-                        text("similarity(name, :q) > 0.3").bindparams(q=ref.name),
-                    )
-                    .order_by(text("similarity(name, :q) DESC").bindparams(q=ref.name))
-                    .limit(1)
-                )
-                row = (await session.execute(stmt)).scalar_one_or_none()
-                if row:
-                    found_product = row
-
-            if found_product:
-                total_price += found_product.price
-                items_out.append(
-                    {
-                        "ref_product_id": ref.id,
-                        "ref_name": ref.name,
-                        "matched_name": found_product.name,
-                        "price": found_product.price,
-                        "barcode": found_product.barcode,
-                        "image_url": found_product.image_url,
-                        "found": True,
-                    }
-                )
-            else:
-                missing.append(ref.name)
-                items_out.append(
-                    {
-                        "ref_product_id": ref.id,
-                        "ref_name": ref.name,
-                        "matched_name": None,
-                        "price": None,
-                        "barcode": None,
-                        "image_url": None,
-                        "found": False,
-                    }
-                )
-
-        store_results.append(
-            StoreCartResult(
-                chain=chain,
-                store_id=store_id,
-                store_name=store_name,
-                total_price=round(total_price, 2),
-                items=items_out,
-                missing_products=missing,
-                has_missing=bool(missing),
+    existing = (
+        await session.execute(
+            select(ShoppingListItem).where(
+                ShoppingListItem.shopping_list_id == shopping_list_id,
+                ShoppingListItem.canonical_product_id == payload.canonical_product_id,
             )
         )
-
-    # Sort by total price ascending (missing items get penalised to the bottom)
-    store_results.sort(key=lambda s: (s.has_missing, s.total_price))
-
-    return CartCompareResult(cart_items=cart_names, stores=store_results)
-
-
-@app.get("/api/chains", tags=["Meta"])
-async def list_chains(session: AsyncSession = Depends(get_session)) -> Dict[str, Any]:
-    """List all chains currently in the database with product counts."""
-    stmt = (
-        select(Product.chain, func.count(Product.id).label("count"))
-        .group_by(Product.chain)
-        .order_by(Product.chain)
-    )
-    rows = list((await session.execute(stmt)).all())
-    return {"chains": [{"chain": r.chain, "product_count": r.count} for r in rows]}
+    ).scalar_one_or_none()
+    if existing:
+        existing.quantity = payload.quantity
+    else:
+        item = ShoppingListItem(
+            shopping_list_id=shopping_list_id,
+            canonical_product_id=payload.canonical_product_id,
+            quantity=payload.quantity,
+        )
+        session.add(item)
+    await session.commit()
+    return await _load_list_detail_for_user(session, user, shopping_list_id)
 
 
-@app.get("/api/scrape/status", response_model=ScrapeStatus, tags=["Scraper"])
-async def scrape_status(session: AsyncSession = Depends(get_session)) -> ScrapeStatus:
-    """Return the status of the scrape scheduler and last run summary."""
-    last_run_data = scheduler.last_run
+@app.patch(
+    "/api/lists/{shopping_list_id}/items/{item_id}",
+    response_model=ShoppingListDetailOut,
+    tags=["Lists"],
+)
+async def update_list_item(
+    shopping_list_id: int,
+    item_id: int,
+    payload: ShoppingListItemUpdateIn,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ShoppingListDetailOut:
+    shopping_list = await get_user_list(session, user.id, shopping_list_id)
+    if not shopping_list:
+        raise HTTPException(status_code=404, detail="Shopping list not found")
+    item = (
+        await session.execute(
+            select(ShoppingListItem).where(
+                ShoppingListItem.id == item_id,
+                ShoppingListItem.shopping_list_id == shopping_list_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="List item not found")
+    item.quantity = payload.quantity
+    await session.commit()
+    return await _load_list_detail_for_user(session, user, shopping_list_id)
 
-    # Also fetch the latest ScrapeRun from DB if last_run not in memory
-    if not last_run_data:
-        stmt = select(ScrapeRun).order_by(ScrapeRun.started_at.desc()).limit(1)
-        run = (await session.execute(stmt)).scalar_one_or_none()
-        if run:
-            last_run_data = {
-                "run_id": run.id,
-                "status": run.status,
-                "started_at": run.started_at.isoformat() if run.started_at else None,
-                "finished_at": run.finished_at.isoformat() if run.finished_at else None,
-                "chains_scraped": run.chains_scraped,
-                "products_upserted": run.products_upserted,
-                "errors": run.errors,
-            }
 
-    return ScrapeStatus(
+@app.delete(
+    "/api/lists/{shopping_list_id}/items/{item_id}",
+    response_model=ShoppingListDetailOut,
+    tags=["Lists"],
+)
+async def delete_list_item(
+    shopping_list_id: int,
+    item_id: int,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ShoppingListDetailOut:
+    shopping_list = await get_user_list(session, user.id, shopping_list_id)
+    if not shopping_list:
+        raise HTTPException(status_code=404, detail="Shopping list not found")
+    item = (
+        await session.execute(
+            select(ShoppingListItem).where(
+                ShoppingListItem.id == item_id,
+                ShoppingListItem.shopping_list_id == shopping_list_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="List item not found")
+    await session.delete(item)
+    await session.commit()
+    return await _load_list_detail_for_user(session, user, shopping_list_id)
+
+
+@app.get(
+    "/api/lists/{shopping_list_id}/comparison",
+    response_model=ShoppingListComparisonOut,
+    tags=["Lists"],
+)
+async def compare_list(
+    shopping_list_id: int,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ShoppingListComparisonOut:
+    shopping_list = await get_user_list_with_items(session, user.id, shopping_list_id)
+    if not shopping_list:
+        raise HTTPException(status_code=404, detail="Shopping list not found")
+    return ShoppingListComparisonOut(**(await compare_shopping_list(session, shopping_list)))
+
+
+@app.get("/api/catalog/status", response_model=CatalogStatusOut, tags=["Catalog"])
+async def catalog_status(session: AsyncSession = Depends(get_session)) -> CatalogStatusOut:
+    last_refresh = await latest_refresh_run(session)
+    last_successful_refresh = await latest_refresh_run(session, successful_only=True)
+    return CatalogStatusOut(
         scheduler_running=scheduler.is_running,
-        interval_hours=scheduler.interval_hours,
-        last_run=last_run_data,
+        refresh_in_progress=scheduler.refresh_in_progress,
+        interval_hours=settings.scrape_interval_hours,
+        catalog_fresh=await catalog_is_fresh(session, settings.scrape_interval_hours),
+        last_refresh=serialize_refresh_run(last_refresh),
+        last_successful_refresh=serialize_refresh_run(last_successful_refresh),
+        chains=[ChainOut(**chain) for chain in await public_chain_statuses(session)],
     )
 
 
-@app.post("/api/scrape/trigger", tags=["Scraper"])
-async def trigger_scrape() -> Dict[str, Any]:
-    """Manually trigger an immediate full scrape of all supermarkets."""
-    result = await scheduler.trigger_now()
-    return result
+@app.post("/api/catalog/refresh", response_model=RefreshTriggerOut, tags=["Catalog"])
+async def trigger_catalog_refresh() -> RefreshTriggerOut:
+    result = await scheduler.trigger_now("manual")
+    return RefreshTriggerOut(**result)
 
 
-@app.get("/api/health", tags=["Meta"])
-async def health() -> Dict[str, str]:
-    return {"status": "ok"}
+@app.get("/api/catalog/refresh/cron", response_model=RefreshTriggerOut, tags=["Catalog"])
+async def trigger_catalog_refresh_cron(
+    authorization: str | None = Header(default=None),
+) -> RefreshTriggerOut:
+    _require_refresh_auth(authorization)
+    result = await scheduler.trigger_now("vercel-cron")
+    return RefreshTriggerOut(**result)
+
+
+@app.get("/api/health", response_model=MessageOut, tags=["Meta"])
+async def health() -> MessageOut:
+    return MessageOut(detail="ok")

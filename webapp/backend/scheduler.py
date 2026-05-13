@@ -1,40 +1,44 @@
-"""
-webapp/backend/scheduler.py
-===========================
-Background scrape scheduler: runs all scrapers every SCRAPE_INTERVAL_HOURS hours.
-"""
-
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
-
-logger = logging.getLogger("scheduler")
+from collections.abc import Awaitable, Callable
 
 
-class ScrapeScheduler:
-    def __init__(self) -> None:
-        self.interval_hours: float = float(os.environ.get("SCRAPE_INTERVAL_HOURS", "6"))
+logger = logging.getLogger("webapp.scheduler")
+
+
+class RefreshScheduler:
+    def __init__(
+        self,
+        interval_hours: float,
+        refresh_callback: Callable[[str], Awaitable[dict]],
+    ) -> None:
+        self.interval_hours = interval_hours
+        self._refresh_callback = refresh_callback
         self._task: asyncio.Task | None = None
+        self._lock = asyncio.Lock()
         self._running = False
         self._last_run: dict | None = None
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
 
     @property
     def last_run(self) -> dict | None:
         return self._last_run
 
     @property
-    def is_running(self) -> bool:
-        return self._running
+    def refresh_in_progress(self) -> bool:
+        return self._lock.locked()
 
     async def start(self) -> None:
-        """Start the background scheduler loop."""
+        if self._running:
+            return
         self._running = True
-        self._task = asyncio.create_task(self._loop(), name="scrape_scheduler")
-        logger.info(
-            "Scrape scheduler started — interval: %.1f hours", self.interval_hours
-        )
+        self._task = asyncio.create_task(self._loop(), name="catalog_refresh_scheduler")
+        logger.info("Catalog refresh scheduler started with %.1f hour interval", self.interval_hours)
 
     async def stop(self) -> None:
         self._running = False
@@ -44,35 +48,31 @@ class ScrapeScheduler:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        logger.info("Scrape scheduler stopped.")
+        logger.info("Catalog refresh scheduler stopped")
 
-    async def trigger_now(self) -> dict:
-        """Trigger an immediate scrape (outside the normal schedule)."""
-        from scraper_runner import run_all_scrapers
-
-        logger.info("Manual scrape triggered.")
-        result = await run_all_scrapers()
-        self._last_run = result
-        return result
+    async def trigger_now(self, source: str = "manual") -> dict:
+        if self._lock.locked():
+            return {
+                "accepted": False,
+                "status": "running",
+                "detail": "A catalog refresh is already in progress.",
+            }
+        async with self._lock:
+            logger.info("Triggering catalog refresh: %s", source)
+            self._last_run = await self._refresh_callback(source)
+            return {
+                "accepted": True,
+                "status": "started",
+                "detail": "Catalog refresh completed.",
+            }
 
     async def _loop(self) -> None:
-        from scraper_runner import run_all_scrapers
-
+        interval_seconds = self.interval_hours * 3600
         while self._running:
-            try:
-                logger.info("Scheduled scrape starting…")
-                self._last_run = await run_all_scrapers()
-            except Exception as exc:
-                logger.error("Scheduler scrape error: %s", exc, exc_info=True)
-
-            interval_secs = self.interval_hours * 3600
-            logger.info(
-                "Next scrape in %.1f hours (%.0f seconds).",
-                self.interval_hours,
-                interval_secs,
-            )
-            await asyncio.sleep(interval_secs)
-
-
-# Singleton instance used by FastAPI lifespan
-scheduler = ScrapeScheduler()
+            if not self._lock.locked():
+                try:
+                    async with self._lock:
+                        self._last_run = await self._refresh_callback("scheduler")
+                except Exception as exc:
+                    logger.error("Scheduled refresh failed: %s", exc, exc_info=True)
+            await asyncio.sleep(interval_seconds)

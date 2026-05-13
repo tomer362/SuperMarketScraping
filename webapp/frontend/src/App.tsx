@@ -1,99 +1,85 @@
-import { useState, useCallback } from 'react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import SearchPage from './components/SearchPage';
-import ShoppingListPage from './components/ShoppingListPage';
-import StatusBar from './components/StatusBar';
-import type { Product } from './types';
-import './index.css';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { Navigate, Outlet, RouterProvider, createBrowserRouter, useLocation } from 'react-router-dom';
+import { queryClient } from './app/queryClient';
+import { AuthProvider, useAuth } from './app/AuthProvider';
+import AppShell from './components/AppShell';
+import AccountPage from './pages/AccountPage';
+import ListDetailPage from './pages/ListDetailPage';
+import ListsPage from './pages/ListsPage';
+import LoginPage from './pages/LoginPage';
+import ProductPage from './pages/ProductPage';
+import SearchPage from './pages/SearchPage';
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: 1,
-      refetchOnWindowFocus: false,
-    },
+const router = createBrowserRouter([
+  {
+    path: '/login',
+    element: <AuthOnlyRoute />,
+    children: [{ index: true, element: <LoginPage /> }],
   },
-});
+  {
+    path: '/',
+    element: <ProtectedRoute />,
+    children: [
+      {
+        element: <AppShell />,
+        children: [
+          { index: true, element: <SearchPage /> },
+          { path: 'products/:productId', element: <ProductPage /> },
+          { path: 'lists', element: <ListsPage /> },
+          { path: 'lists/:listId', element: <ListDetailPage /> },
+          { path: 'account', element: <AccountPage /> },
+        ],
+      },
+    ],
+  },
+]);
 
-type Tab = 'search' | 'cart';
+function ProtectedRoute() {
+  const { status } = useAuth();
+  const location = useLocation();
 
-function Inner() {
-  const [activeTab, setActiveTab] = useState<Tab>('search');
-  const [cartItems, setCartItems] = useState<Product[]>([]);
+  if (status === 'loading') {
+    return <FullPageState text="טוען חשבון..." />;
+  }
 
-  const cartIds = new Set(cartItems.map((p) => p.id));
+  if (status === 'anonymous') {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
 
-  const addToCart = useCallback((product: Product) => {
-    setCartItems((prev) => {
-      if (prev.some((p) => p.id === product.id)) return prev;
-      return [...prev, product];
-    });
-  }, []);
+  return <Outlet />;
+}
 
-  const removeFromCart = useCallback((productId: number) => {
-    setCartItems((prev) => prev.filter((p) => p.id !== productId));
-  }, []);
+function AuthOnlyRoute() {
+  const { status } = useAuth();
 
+  if (status === 'loading') {
+    return <FullPageState text="טוען..." />;
+  }
+
+  if (status === 'authenticated') {
+    return <Navigate to="/" replace />;
+  }
+
+  return <Outlet />;
+}
+
+function FullPageState({ text }: { text: string }) {
   return (
-    <div className="min-h-screen flex flex-col" dir="rtl">
-      {/* Header */}
-      <header className="bg-white border-b border-slate-100 shadow-sm sticky top-0 z-10">
-        <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between">
-          <h1 className="text-lg font-bold text-slate-800">
-            🛒 השוואת מחירים
-          </h1>
-          <nav className="flex gap-1 bg-slate-100 rounded-xl p-1">
-            <button
-              onClick={() => setActiveTab('search')}
-              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
-                activeTab === 'search'
-                  ? 'bg-white shadow-sm text-slate-800'
-                  : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              חיפוש
-            </button>
-            <button
-              onClick={() => setActiveTab('cart')}
-              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all relative ${
-                activeTab === 'cart'
-                  ? 'bg-white shadow-sm text-slate-800'
-                  : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              רשימת קניות
-              {cartItems.length > 0 && (
-                <span className="absolute -top-1 -right-1 w-4 h-4 bg-blue-500 text-white text-xs rounded-full flex items-center justify-center leading-none">
-                  {cartItems.length}
-                </span>
-              )}
-            </button>
-          </nav>
-        </div>
-        <StatusBar />
-      </header>
-
-      {/* Main content */}
-      <main className="flex-1 max-w-3xl mx-auto w-full px-4 py-4">
-        {activeTab === 'search' ? (
-          <SearchPage cartIds={cartIds} onAddToCart={addToCart} />
-        ) : (
-          <ShoppingListPage cartItems={cartItems} onRemoveFromCart={removeFromCart} />
-        )}
-      </main>
-
-      {/* Footer */}
-      <footer className="text-center text-xs text-slate-300 py-4 border-t border-slate-100">
-        מחירים מעודכנים מהרשתות: שופרסל, טיב טעם, קרפור, רמי לוי, יוחננוף, קשת טעמים, קוויק, ויקטורי, יינות ביתן, מחסני השוק
-      </footer>
-    </div>
+    <main className="flex min-h-screen items-center justify-center bg-slate-100 px-4 text-slate-500">
+      <div className="rounded-[28px] bg-white px-6 py-5 text-center shadow-sm">
+        <h1 className="text-xl font-black text-slate-900">Supermarket Compass</h1>
+        <p className="mt-2 text-base font-semibold">{text}</p>
+      </div>
+    </main>
   );
 }
 
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <Inner />
+      <AuthProvider>
+        <RouterProvider router={router} />
+      </AuthProvider>
     </QueryClientProvider>
   );
 }
