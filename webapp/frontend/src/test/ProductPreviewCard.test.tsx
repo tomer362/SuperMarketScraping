@@ -21,6 +21,7 @@ describe('ProductPreviewCard', () => {
             unit_qty: 250,
             unit_qty_si: 250,
             unit_dimension: 'mass',
+            is_weighable: false,
             cheapest_price: 5.5,
             cheapest_chain: 'ramilevi',
             cheapest_chain_label: 'רמי לוי',

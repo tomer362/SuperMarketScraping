@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { addListItem, createList, getLists } from '../api';
+import { formatQuantity } from '../lib/format';
 import type { ProductDetail, ShoppingListSummary } from '../types';
 
 interface ListPickerDialogProps {
@@ -71,7 +72,7 @@ export default function ListPickerDialog({ product, isOpen, onClose }: ListPicke
               <div>
                 <p className="text-sm font-bold text-slate-900">{shoppingList.name}</p>
                 <p className="text-xs text-slate-500">
-                  {shoppingList.item_count} מוצרים · {shoppingList.total_quantity} יחידות
+                  {shoppingList.item_count} מוצרים · סה״כ כמות {formatQuantity(shoppingList.total_quantity)}
                 </p>
               </div>
               <span className="rounded-full bg-sky-50 px-3 py-1 text-xs font-bold text-sky-700">

@@ -47,6 +47,7 @@ export interface ProductPreview {
   unit_qty?: number | null;
   unit_qty_si?: number | null;
   unit_dimension?: string | null;
+  is_weighable: boolean;
   cheapest_price: number;
   cheapest_chain: string;
   cheapest_chain_label: string;
@@ -103,6 +104,7 @@ export interface ProductDetail {
   unit_qty?: number | null;
   unit_qty_si?: number | null;
   unit_dimension?: string | null;
+  is_weighable: boolean;
   cheapest_price: number;
   chain_count: number;
   offers: ChainOffer[];

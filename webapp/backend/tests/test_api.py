@@ -110,6 +110,33 @@ async def test_product_detail_and_lists_flow(authenticated_client):
 
 
 @pytest.mark.asyncio
+async def test_weighable_quantity_supports_fractional_amount(authenticated_client):
+    search_response = await authenticated_client.get('/api/products/search', params={'q': 'עוף'})
+    assert search_response.status_code == 200
+    products = search_response.json()['products']
+    product = next(item for item in products if item['is_weighable'])
+
+    list_response = await authenticated_client.post('/api/lists', json={'name': 'משקלים'})
+    shopping_list = list_response.json()
+
+    add_response = await authenticated_client.post(
+        f"/api/lists/{shopping_list['id']}/items",
+        json={'canonical_product_id': product['id'], 'quantity': 0.5},
+    )
+    assert add_response.status_code == 200
+    list_payload = add_response.json()
+    assert list_payload['items'][0]['quantity'] == pytest.approx(0.5)
+
+    comparison_response = await authenticated_client.get(
+        f"/api/lists/{shopping_list['id']}/comparison"
+    )
+    comparison = comparison_response.json()
+    first_line = comparison['chains'][0]['items'][0]
+    assert first_line['quantity'] == pytest.approx(0.5)
+    assert first_line['line_total'] == pytest.approx(first_line['unit_price'] * 0.5, rel=1e-2)
+
+
+@pytest.mark.asyncio
 async def test_catalog_status(authenticated_client):
     response = await authenticated_client.get('/api/catalog/status')
     assert response.status_code == 200

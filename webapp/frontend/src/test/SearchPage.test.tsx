@@ -60,6 +60,7 @@ describe('SearchPage', () => {
           unit_qty: 1000,
           unit_qty_si: 1000,
           unit_dimension: 'volume',
+          is_weighable: false,
           cheapest_price: 5.5,
           cheapest_chain: 'carrefour',
           cheapest_chain_label: 'קרפור',

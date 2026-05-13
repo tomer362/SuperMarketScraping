@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { createList, getLists } from '../api';
 import { useState } from 'react';
+import { formatQuantity } from '../lib/format';
 
 export default function ListsPage() {
   const navigate = useNavigate();
@@ -39,7 +40,7 @@ export default function ListsPage() {
             >
               <p className="text-lg font-black text-slate-900">{shoppingList.name}</p>
               <p className="mt-2 text-sm text-slate-500">{shoppingList.item_count} מוצרים</p>
-              <p className="mt-1 text-sm text-slate-500">{shoppingList.total_quantity} יחידות בסך הכל</p>
+              <p className="mt-1 text-sm text-slate-500">סה״כ כמות: {formatQuantity(shoppingList.total_quantity)}</p>
             </Link>
           ))}
         </div>

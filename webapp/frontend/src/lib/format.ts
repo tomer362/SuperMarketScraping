@@ -20,3 +20,16 @@ export function formatRelativeDate(value: string | null | undefined): string {
     minute: '2-digit',
   });
 }
+
+export function formatQuantity(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) {
+    return '-';
+  }
+  if (Number.isInteger(value)) {
+    return value.toLocaleString('he-IL');
+  }
+  return value.toLocaleString('he-IL', {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 2,
+  });
+}

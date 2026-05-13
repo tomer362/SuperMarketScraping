@@ -2,7 +2,28 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { compareList, deleteList, deleteListItem, getList, renameList, updateListItem } from '../api';
-import { formatCurrency } from '../lib/format';
+import { formatCurrency, formatQuantity } from '../lib/format';
+
+function quantityStep(isWeighable: boolean): number {
+  return isWeighable ? 0.1 : 1;
+}
+
+function quantityMin(isWeighable: boolean): number {
+  return isWeighable ? 0.1 : 1;
+}
+
+function normalizeQuantity(value: number, step: number, min: number): number {
+  const rounded = Math.round(value / step) * step;
+  const clamped = Math.max(min, rounded);
+  return Number(clamped.toFixed(step < 1 ? 2 : 0));
+}
+
+function quantityUnitLabel(isWeighable: boolean, dimension?: string | null): string {
+  if (!isWeighable) {
+    return 'יח׳';
+  }
+  return dimension === 'volume' ? 'ל׳' : 'ק״ג';
+}
 
 export default function ListDetailPage() {
   const { listId } = useParams();
@@ -83,7 +104,7 @@ export default function ListDetailPage() {
                 <p className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-600">Editable basket</p>
                 <h2 className="mt-2 text-2xl font-black text-slate-900">{shoppingList.name}</h2>
                 <p className="mt-2 text-sm text-slate-500">
-                  {shoppingList.item_count} מוצרים · {shoppingList.total_quantity} יחידות
+                  {shoppingList.item_count} מוצרים · סה״כ כמות {formatQuantity(shoppingList.total_quantity)}
                 </p>
               </div>
               <button
@@ -126,6 +147,13 @@ export default function ListDetailPage() {
             ) : (
               shoppingList.items.map((item) => (
                 <article key={item.id} className="rounded-[30px] border border-white/80 bg-white/95 p-4 shadow-sm">
+                  {(() => {
+                    const isWeighable = item.product.is_weighable;
+                    const step = quantityStep(isWeighable);
+                    const min = quantityMin(isWeighable);
+                    const unitLabel = quantityUnitLabel(isWeighable, item.product.unit_dimension);
+
+                    return (
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex min-w-0 gap-4">
                       <div className="flex h-18 w-18 shrink-0 items-center justify-center overflow-hidden rounded-[22px] bg-slate-100">
@@ -150,7 +178,12 @@ export default function ListDetailPage() {
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => quantityMutation.mutate({ itemId: item.id, quantity: Math.max(1, item.quantity - 1) })}
+                        onClick={() =>
+                          quantityMutation.mutate({
+                            itemId: item.id,
+                            quantity: normalizeQuantity(item.quantity - step, step, min),
+                          })
+                        }
                         className="h-11 w-11 rounded-full border border-slate-200 bg-white text-lg font-black text-slate-700"
                         aria-label={`הפחת כמות עבור ${item.product.name}`}
                       >
@@ -162,20 +195,30 @@ export default function ListDetailPage() {
                       <input
                         id={`quantity-${item.id}`}
                         type="number"
-                        min={1}
+                        min={min}
                         max={999}
+                        step={step}
                         value={item.quantity}
                         onChange={(event) => {
                           const parsed = Number(event.target.value);
-                          if (Number.isFinite(parsed) && parsed >= 1) {
-                            quantityMutation.mutate({ itemId: item.id, quantity: parsed });
+                          if (Number.isFinite(parsed) && parsed >= min) {
+                            quantityMutation.mutate({
+                              itemId: item.id,
+                              quantity: normalizeQuantity(parsed, step, min),
+                            });
                           }
                         }}
                         className="min-h-11 w-16 rounded-full bg-slate-100 px-3 py-2 text-center text-sm font-black text-slate-900 outline-none"
                       />
+                      <span className="text-xs font-semibold text-slate-500">{unitLabel}</span>
                       <button
                         type="button"
-                        onClick={() => quantityMutation.mutate({ itemId: item.id, quantity: item.quantity + 1 })}
+                        onClick={() =>
+                          quantityMutation.mutate({
+                            itemId: item.id,
+                            quantity: normalizeQuantity(item.quantity + step, step, min),
+                          })
+                        }
                         className="h-11 w-11 rounded-full border border-slate-200 bg-white text-lg font-black text-slate-700"
                         aria-label={`הגדל כמות עבור ${item.product.name}`}
                       >
@@ -190,6 +233,8 @@ export default function ListDetailPage() {
                       </button>
                     </div>
                   </div>
+                    );
+                  })()}
                 </article>
               ))
             )}
@@ -214,7 +259,7 @@ export default function ListDetailPage() {
               <h3 className="mt-2 text-2xl font-black text-slate-900">השוואת סל מלאה</h3>
             </div>
             <p className="rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-600">
-              {comparisonQuery.data.total_quantity} יחידות
+              כמות כוללת: {formatQuantity(comparisonQuery.data.total_quantity)}
             </p>
           </div>
 
@@ -268,7 +313,7 @@ export default function ListDetailPage() {
                         <div className="min-w-0">
                           <p className="truncate text-sm font-bold text-slate-900">{item.product_name}</p>
                           <p className="mt-1 text-xs text-slate-500">
-                            כמות {item.quantity}
+                            כמות {formatQuantity(item.quantity)}
                             {item.deal_applied && item.deal_description ? ` · ${item.deal_description}` : ''}
                           </p>
                         </div>

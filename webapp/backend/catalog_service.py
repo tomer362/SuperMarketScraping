@@ -551,6 +551,7 @@ def serialize_product_preview(
         "unit_qty": product.unit_qty,
         "unit_qty_si": product.unit_qty_si,
         "unit_dimension": product.unit_dimension,
+        "is_weighable": bool(offer.is_weighable),
         "cheapest_price": round(float(offer.price), 2),
         "cheapest_chain": offer.chain,
         "cheapest_chain_label": chain.label,
@@ -718,6 +719,7 @@ async def load_product_detail(session: AsyncSession, product_id: int) -> dict[st
         "unit_qty": product.unit_qty,
         "unit_qty_si": product.unit_qty_si,
         "unit_dimension": product.unit_dimension,
+        "is_weighable": any(bool(offer.is_weighable) for offer in chain_offers),
         "cheapest_price": round(float(cheapest_offer.price), 2),
         "chain_count": len(chain_offers),
         "offers": detail_offers,
@@ -787,7 +789,7 @@ async def serialize_shopping_list_summary(
         "id": shopping_list.id,
         "name": shopping_list.name,
         "item_count": len(items),
-        "total_quantity": sum(item.quantity for item in items),
+        "total_quantity": round(sum(float(item.quantity) for item in items), 3),
         "updated_at": shopping_list.updated_at,
     }
 
@@ -822,7 +824,7 @@ async def serialize_shopping_list_detail(
         serialized_items.append(
             {
                 "id": item.id,
-                "quantity": item.quantity,
+                "quantity": round(float(item.quantity), 3),
                 "product": serialize_product_preview(
                     product,
                     offer,
@@ -835,18 +837,52 @@ async def serialize_shopping_list_detail(
         "id": shopping_list.id,
         "name": shopping_list.name,
         "item_count": len(serialized_items),
-        "total_quantity": sum(item["quantity"] for item in serialized_items),
+        "total_quantity": round(sum(item["quantity"] for item in serialized_items), 3),
         "updated_at": shopping_list.updated_at,
         "items": serialized_items,
     }
 
 
-def _line_totals_for_offer(offer: CatalogOffer, quantity: int) -> dict[str, Any]:
+def _requested_qty_si_for_weighable(offer: CatalogOffer, quantity: float) -> float | None:
+    if not offer.is_weighable:
+        return None
+    if not offer.unit_qty_si or offer.unit_qty_si <= 0:
+        return None
+    if offer.unit_dimension == "mass":
+        return quantity * 1000.0
+    if offer.unit_dimension == "volume":
+        return quantity * 1000.0
+    return None
+
+
+def _line_totals_for_offer(offer: CatalogOffer, quantity: float) -> dict[str, Any]:
+    quantity_value = float(quantity)
     deal = offer.deal or {}
     unit_price = float(offer.price)
     regular_unit_price = float(offer.regular_price)
-    total = unit_price * quantity
-    regular_total = regular_unit_price * quantity
+
+    requested_qty_si = _requested_qty_si_for_weighable(offer, quantity_value)
+    if requested_qty_si is not None and offer.unit_qty_si and offer.unit_qty_si > 0:
+        ratio = requested_qty_si / float(offer.unit_qty_si)
+        total = unit_price * ratio
+        regular_total = regular_unit_price * ratio
+        deal_applied = unit_price < regular_unit_price
+        deal_description = deal.get("deal_description") if deal_applied else None
+        unit_price_effective = total / quantity_value if quantity_value > 0 else unit_price
+        regular_unit_price_effective = (
+            regular_total / quantity_value if quantity_value > 0 else regular_unit_price
+        )
+        return {
+            "unit_price": round(unit_price_effective, 2),
+            "regular_unit_price": round(regular_unit_price_effective, 2),
+            "line_total": round(total, 2),
+            "regular_line_total": round(regular_total, 2),
+            "deal_applied": deal_applied,
+            "deal_description": deal_description,
+        }
+
+    total = unit_price * quantity_value
+    regular_total = regular_unit_price * quantity_value
     deal_applied = unit_price < regular_unit_price
     deal_description = deal.get("deal_description") if deal_applied else None
 
@@ -858,9 +894,10 @@ def _line_totals_for_offer(offer: CatalogOffer, quantity: int) -> dict[str, Any]
     ):
         minimum_qty = int(deal["deal_min_qty"])
         deal_total = float(deal["deal_price"])
-        if minimum_qty > 0:
-            bundles = quantity // minimum_qty
-            remainder = quantity % minimum_qty
+        quantity_as_int = int(quantity_value)
+        if minimum_qty > 0 and abs(quantity_value - quantity_as_int) < 1e-6:
+            bundles = quantity_as_int // minimum_qty
+            remainder = quantity_as_int % minimum_qty
             total = bundles * deal_total + remainder * unit_price
             deal_applied = bundles > 0 or unit_price < regular_unit_price
             if deal_applied:
@@ -878,7 +915,7 @@ def _line_totals_for_offer(offer: CatalogOffer, quantity: int) -> dict[str, Any]
 
 def _choose_best_offer_for_quantity(
     offers: list[CatalogOffer],
-    quantity: int,
+    quantity: float,
 ) -> tuple[CatalogOffer, dict[str, Any]]:
     best_offer = offers[0]
     best_meta = _line_totals_for_offer(best_offer, quantity)
@@ -971,7 +1008,7 @@ async def compare_shopping_list(
                             "list_item_id": item.id,
                             "canonical_product_id": product.id,
                             "product_name": product.display_name,
-                            "quantity": item.quantity,
+                            "quantity": round(float(item.quantity), 3),
                             "matched_name": None,
                             "unit_price": None,
                             "regular_unit_price": None,
@@ -995,7 +1032,7 @@ async def compare_shopping_list(
                         "list_item_id": item.id,
                         "canonical_product_id": product.id,
                         "product_name": product.display_name,
-                        "quantity": item.quantity,
+                        "quantity": round(float(item.quantity), 3),
                         "matched_name": offer.name,
                         "unit_price": totals["unit_price"],
                         "regular_unit_price": totals["regular_unit_price"],
@@ -1040,6 +1077,6 @@ async def compare_shopping_list(
         "list_id": shopping_list.id,
         "list_name": shopping_list.name,
         "item_count": len(items),
-        "total_quantity": sum(item.quantity for item in items),
+        "total_quantity": round(sum(float(item.quantity) for item in items), 3),
         "chains": chain_results,
     }

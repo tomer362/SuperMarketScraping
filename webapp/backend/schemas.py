@@ -75,6 +75,7 @@ class ProductPreviewOut(BaseModel):
     unit_qty: float | None = None
     unit_qty_si: float | None = None
     unit_dimension: str | None = None
+    is_weighable: bool = False
     cheapest_price: float
     cheapest_chain: str
     cheapest_chain_label: str
@@ -120,6 +121,7 @@ class ProductDetailOut(BaseModel):
     unit_qty: float | None = None
     unit_qty_si: float | None = None
     unit_dimension: str | None = None
+    is_weighable: bool = False
     cheapest_price: float
     chain_count: int
     offers: list[ChainOfferOut]
@@ -135,16 +137,16 @@ class ShoppingListUpdateIn(BaseModel):
 
 class ShoppingListItemCreateIn(BaseModel):
     canonical_product_id: int
-    quantity: int = Field(default=1, ge=1, le=999)
+    quantity: float = Field(default=1.0, ge=0.1, le=999)
 
 
 class ShoppingListItemUpdateIn(BaseModel):
-    quantity: int = Field(ge=1, le=999)
+    quantity: float = Field(ge=0.1, le=999)
 
 
 class ShoppingListItemOut(BaseModel):
     id: int
-    quantity: int
+    quantity: float
     product: ProductPreviewOut
 
 
@@ -152,7 +154,7 @@ class ShoppingListSummaryOut(BaseModel):
     id: int
     name: str
     item_count: int
-    total_quantity: int
+    total_quantity: float
     updated_at: datetime
 
 
@@ -164,7 +166,7 @@ class BasketComparisonLineOut(BaseModel):
     list_item_id: int
     canonical_product_id: int
     product_name: str
-    quantity: int
+    quantity: float
     matched_name: str | None = None
     unit_price: float | None = None
     regular_unit_price: float | None = None
@@ -194,7 +196,7 @@ class ShoppingListComparisonOut(BaseModel):
     list_id: int
     list_name: str
     item_count: int
-    total_quantity: int
+    total_quantity: float
     chains: list[BasketComparisonChainOut]
 
 

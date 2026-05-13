@@ -219,7 +219,7 @@ class ShoppingListItem(Base):
     canonical_product_id: Mapped[int] = mapped_column(
         ForeignKey("canonical_products.id"), index=True, nullable=False
     )
-    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    quantity: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
