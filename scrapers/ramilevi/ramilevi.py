@@ -169,7 +169,17 @@ async def _fetch_catalog_page(
                     status=resp.status,
                     message=f"HTTP {resp.status}",
                 )
-            return await resp.json(content_type=None)
+            data = await resp.json(content_type=None)
+            if not isinstance(data, dict):
+                logger.warning(
+                    "Unexpected catalog response type store=%s offset=%s size=%s: %r",
+                    store_id,
+                    offset,
+                    size,
+                    data,
+                )
+                return {}
+            return data
 
     try:
         return await with_retry(
@@ -207,7 +217,17 @@ async def _fetch_search_page(
                     status=resp.status,
                     message=f"HTTP {resp.status}",
                 )
-            return await resp.json(content_type=None)
+            data = await resp.json(content_type=None)
+            if not isinstance(data, dict):
+                logger.warning(
+                    "Unexpected search response type store=%s offset=%s size=%s: %r",
+                    store_id,
+                    offset,
+                    size,
+                    data,
+                )
+                return {}
+            return data
 
     try:
         return await with_retry(
@@ -305,33 +325,34 @@ def _to_unified(
     raw_uom: Optional[str] = None
     if net_content:
         value_str = str(net_content.get("value") or "").strip()
-        try:
-            if "*" in value_str:
-                # Handle multiplicative notation like '4*140' (4 packs × 140 g each)
-                parts = value_str.split("*", 1)
-                qty_raw = float(parts[0].strip()) * float(parts[1].strip()) or None
+        if value_str:
+            try:
+                if "*" in value_str:
+                    # Handle multiplicative notation like '4*140' (4 packs x 140 g each)
+                    parts = value_str.split("*", 1)
+                    qty_raw = float(parts[0].strip()) * float(parts[1].strip()) or None
+                    logger.debug(
+                        "ramilevi: product id=%s name=%r parsed multiplicative net_content %r -> %s",
+                        item.get("id"),
+                        item.get("name"),
+                        value_str,
+                        qty_raw,
+                    )
+                else:
+                    qty_raw = float(value_str) or None
+            except (ValueError, TypeError) as exc:
+                logger.warning(
+                    "Could not parse net_content value %r: %s",
+                    value_str,
+                    exc,
+                )
                 logger.debug(
-                    "ramilevi: product id=%s name=%r — parsed multiplicative net_content %r → %s",
+                    "ramilevi: net_content parse failure product id=%s name=%r full net_content=%r",
                     item.get("id"),
                     item.get("name"),
-                    value_str,
-                    qty_raw,
+                    net_content,
                 )
-            else:
-                qty_raw = float(value_str) or None
-        except (ValueError, TypeError) as exc:
-            logger.warning(
-                "Could not parse net_content value %r: %s",
-                value_str,
-                exc,
-            )
-            logger.debug(
-                "ramilevi: net_content parse failure — product id=%s name=%r full net_content=%r",
-                item.get("id"),
-                item.get("name"),
-                net_content,
-            )
-            qty_raw = None
+                qty_raw = None
         raw_uom = net_content.get("UOM") or None
 
     canonical_uom, qty_si, dimension, _si_per = normalize_unit(raw_uom, qty_raw)
@@ -477,7 +498,7 @@ async def _scrape_store(
                 store_id,
                 name_query,
                 offset=offset,
-                size=batch_size,
+                size=min(batch_size, total - offset),
                 max_retries=max_retries,
                 base_delay=base_delay,
                 label=f"store={store_id} search offset={offset}",
@@ -487,7 +508,7 @@ async def _scrape_store(
                 session,
                 store_id,
                 offset=offset,
-                size=batch_size,
+                size=min(batch_size, total - offset),
                 max_retries=max_retries,
                 base_delay=base_delay,
                 label=f"store={store_id} catalog offset={offset}",

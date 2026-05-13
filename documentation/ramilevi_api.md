@@ -3,6 +3,7 @@
 **Base URL:** `https://www.rami-levy.co.il`
 **Platform:** Custom Node.js / Elasticsearch backend (Nuxt.js SPA)
 **Authentication:** None required for public catalog endpoints
+**Last refreshed:** 2026-05-13
 
 ---
 
@@ -43,6 +44,26 @@ Returns all physical and online store locations.
 - `delivery` — 1 if the store offers home delivery.
 
 **Online-capable stores** (those with a non-null `internet_store_id`) can be browsed via the catalog API.
+
+### Representative Store Selection
+
+Use stores `1314` (`אילת`) and `1389` (`איילון בני ברק`) together for reference coverage audits. The previous audit target store `125` (`ראשון לציון`) is currently sparse and returned only `692` catalog products, which made Ramilevi coverage look falsely broken. Store `1314` is the highest-coverage single store found, but it hits an Elasticsearch-style `10,000` result-window cap, so pairing it with `1389` improves chain-level product coverage without the heavy throttling seen in larger multi-store runs.
+
+Live catalog probe from 2026-05-13:
+
+| Store ID | Name | Catalog Total |
+|---:|---|---:|
+| `1314` | אילת | 10,000 |
+| `1389` | איילון בני ברק | 8,504 |
+| `1329` | רחובות | 8,078 |
+| `1306` | גבעת שמואל | 7,951 |
+| `1221` | ירושלים - הר חומה | 7,794 |
+| `125` | ראשון לציון | 692 |
+| `1357` | כרמיאל | 403 |
+| `130` | גוש עציון | 0 |
+| `8` | שער בנימין | 0 |
+
+Refresh rule: probe all `ONLINE_STORES` with `POST /api/catalog?` using `size=1`, then choose stores with broad inventory. Do not assume any online-capable store is suitable for product coverage audits.
 
 ---
 
@@ -195,6 +216,10 @@ Content-Type: application/json
 ### Pagination
 
 Use the `from` field (zero-based offset). The `page` parameter is **not functional** — always use `from`.
+
+Observed note from 2026-05-13: store `1314` reports exactly `10,000` products. This is a real backend cap, not a code constant. `/api/menu?store=1314` returns `hits.total.value=10000` with `hits.total.relation="gte"`, and catalog requests where `from + size` crosses `10,000` return `['Internal Server Error']`. For example, `from=9990&size=10` succeeds, while `from=9999&size=10` and `from=10000&size=10` fail.
+
+The scraper should keep page sizes inside the reported total window and should treat non-object JSON responses as API errors. For reference matching, combine stores `1314` and `1389` with low concurrency rather than trying to scrape many stores in one audit run; a five-store probe improved coverage but triggered many transient `403` responses.
 
 ```
 Page 1: from=0,   size=100  → items 0–99

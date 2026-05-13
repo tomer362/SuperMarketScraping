@@ -68,7 +68,7 @@ TARGET_CHAINS = [
 TARGET_SELECTION: dict[str, dict[str, Any]] = {
     "carrefour": {"branches": [3019]},
     "machsanei_hashook": {},  # fixed branch inside scraper
-    "ramilevi": {"stores": [125]},
+    "ramilevi": {"stores": [1314, 1389]},
     "keshet": {"branches": [2585]},
     "quik": {"branches": [3264]},
     "victory": {"branches": [2527]},
