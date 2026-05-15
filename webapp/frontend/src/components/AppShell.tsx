@@ -2,11 +2,13 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getCatalogStatus, getChains, triggerCatalogRefresh } from '../api';
 import { useAuth } from '../app/AuthProvider';
+import { useTheme } from '../app/theme';
 import { formatRelativeDate } from '../lib/format';
 import { classNames } from '../lib/classNames';
 
 export default function AppShell() {
   const { user, logout } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
@@ -80,6 +82,14 @@ export default function AppShell() {
                   disabled={refreshMutation.isPending}
                 >
                   {refreshMutation.isPending ? 'מעדכן קטלוג...' : 'רענן קטלוג'}
+                </button>
+                <button
+                  type="button"
+                  onClick={toggleTheme}
+                  className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                  aria-label="החלף מצב תצוגה"
+                >
+                  {theme === 'dark' ? 'מצב בהיר' : 'מצב כהה'}
                 </button>
                 <button
                   type="button"

@@ -2,6 +2,7 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { Navigate, Outlet, RouterProvider, createBrowserRouter, useLocation } from 'react-router-dom';
 import { queryClient } from './app/queryClient';
 import { AuthProvider, useAuth } from './app/AuthProvider';
+import { ThemeProvider } from './app/theme';
 import AppShell from './components/AppShell';
 import AccountPage from './pages/AccountPage';
 import ListDetailPage from './pages/ListDetailPage';
@@ -77,9 +78,11 @@ function FullPageState({ text }: { text: string }) {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <RouterProvider router={router} />
-      </AuthProvider>
+      <ThemeProvider>
+        <AuthProvider>
+          <RouterProvider router={router} />
+        </AuthProvider>
+      </ThemeProvider>
     </QueryClientProvider>
   );
 }
