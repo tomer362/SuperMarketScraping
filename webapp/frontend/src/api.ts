@@ -120,6 +120,18 @@ export async function addListItem(
   return response.data;
 }
 
+export async function addGenericGroupItem(
+  listId: number,
+  genericGroupKey: string,
+  quantity = 1,
+): Promise<ShoppingListDetail> {
+  const response = await api.post<ShoppingListDetail>(`/lists/${listId}/items`, {
+    generic_group_key: genericGroupKey,
+    quantity,
+  });
+  return response.data;
+}
+
 export async function updateListItem(
   listId: number,
   itemId: number,

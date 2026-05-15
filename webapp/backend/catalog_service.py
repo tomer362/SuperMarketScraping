@@ -17,9 +17,14 @@ from models import (
     CatalogOffer,
     CatalogOfferStaging,
     CatalogRefreshRun,
+    GenericProductGroup,
+    GenericProductGroupMember,
+    GenericProductGroupMemberStaging,
+    GenericProductGroupStaging,
     ShoppingList,
     ShoppingListItem,
 )
+from generic_groups import classify_generic_offer
 from text_utils import build_match_key, build_search_text, normalize_barcode, normalize_text
 
 
@@ -57,6 +62,18 @@ _OFFER_COPY_COLUMNS = (
     "created_at",
     "updated_at",
 )
+_GENERIC_GROUP_COPY_COLUMNS = (
+    "key",
+    "family",
+    "label",
+    "search_text",
+    "offer_count",
+    "chain_count",
+    "cheapest_price",
+    "created_at",
+    "updated_at",
+)
+_GENERIC_MEMBER_COPY_COLUMNS = ("group_key", "chain", "store_id", "product_id")
 
 
 def _offer_model(target_table: str):
@@ -82,6 +99,15 @@ def _token_conditions(tokens: Sequence[str]) -> list[Any]:
         if len(token) < 2:
             continue
         conditions.append(CanonicalProduct.search_text.contains(token))
+    return conditions
+
+
+def _generic_token_conditions(tokens: Sequence[str]) -> list[Any]:
+    conditions: list[Any] = []
+    for token in tokens:
+        if len(token) < 2:
+            continue
+        conditions.append(GenericProductGroup.search_text.contains(token))
     return conditions
 
 
@@ -318,6 +344,11 @@ async def clear_staging_offers(session: AsyncSession) -> None:
     await session.execute(delete(CatalogOfferStaging))
 
 
+async def clear_staging_generic_groups(session: AsyncSession) -> None:
+    await session.execute(delete(GenericProductGroupMemberStaging))
+    await session.execute(delete(GenericProductGroupStaging))
+
+
 async def replace_active_offers_from_staging(session: AsyncSession) -> None:
     await session.execute(delete(CatalogOffer))
     projection = select(
@@ -325,6 +356,113 @@ async def replace_active_offers_from_staging(session: AsyncSession) -> None:
     )
     await session.execute(
         insert(CatalogOffer).from_select(_OFFER_COPY_COLUMNS, projection)
+    )
+
+
+async def replace_active_generic_groups_from_staging(session: AsyncSession) -> None:
+    await session.execute(delete(GenericProductGroupMember))
+    await session.execute(delete(GenericProductGroup))
+    group_projection = select(
+        *(getattr(GenericProductGroupStaging, column) for column in _GENERIC_GROUP_COPY_COLUMNS)
+    )
+    await session.execute(
+        insert(GenericProductGroup).from_select(_GENERIC_GROUP_COPY_COLUMNS, group_projection)
+    )
+    member_projection = select(
+        *(getattr(GenericProductGroupMemberStaging, column) for column in _GENERIC_MEMBER_COPY_COLUMNS)
+    )
+    await session.execute(
+        insert(GenericProductGroupMember).from_select(_GENERIC_MEMBER_COPY_COLUMNS, member_projection)
+    )
+
+
+async def _build_generic_groups(
+    session: AsyncSession,
+    *,
+    offer_model: type[CatalogOffer] | type[CatalogOfferStaging],
+    group_model: type[GenericProductGroup] | type[GenericProductGroupStaging],
+    member_model: type[GenericProductGroupMember] | type[GenericProductGroupMemberStaging],
+) -> None:
+    offers = list((await session.execute(select(offer_model))).scalars())
+    group_meta: dict[str, dict[str, Any]] = {}
+    members: list[dict[str, Any]] = []
+    chain_sets: dict[str, set[str]] = defaultdict(set)
+    offer_counts: dict[str, int] = defaultdict(int)
+
+    for offer in offers:
+        group = classify_generic_offer(offer)
+        if not group:
+            continue
+        meta = group_meta.setdefault(
+            group.key,
+            {
+                "key": group.key,
+                "family": group.family,
+                "label": group.label,
+                "search_text": build_search_text(group.label, group.family),
+                "cheapest_price": float(offer.price),
+            },
+        )
+        meta["cheapest_price"] = min(float(meta["cheapest_price"]), float(offer.price))
+        chain_sets[group.key].add(offer.chain)
+        offer_counts[group.key] += 1
+        members.append(
+            {
+                "group_key": group.key,
+                "chain": offer.chain,
+                "store_id": offer.store_id,
+                "product_id": offer.product_id,
+            }
+        )
+
+    if not group_meta:
+        return
+    group_rows = []
+    for key, row in group_meta.items():
+        group_rows.append(
+            {
+                **row,
+                "offer_count": offer_counts[key],
+                "chain_count": len(chain_sets[key]),
+                "updated_at": _now_utc(),
+            }
+        )
+    session.add_all(group_model(**row) for row in group_rows)
+    await session.flush()
+
+    if members:
+        if database_backend == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert as dialect_insert
+        elif database_backend == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert as dialect_insert
+        else:
+            raise RuntimeError(f"Unsupported database backend: {database_backend}")
+        for batch in _chunks(members, 1000):
+            stmt = dialect_insert(member_model).values(list(batch))
+            stmt = stmt.on_conflict_do_nothing(
+                index_elements=["group_key", "chain", "store_id", "product_id"]
+            )
+            await session.execute(stmt)
+
+
+async def build_staging_generic_groups(session: AsyncSession) -> None:
+    await clear_staging_generic_groups(session)
+    await _build_generic_groups(
+        session,
+        offer_model=CatalogOfferStaging,
+        group_model=GenericProductGroupStaging,
+        member_model=GenericProductGroupMemberStaging,
+    )
+
+
+async def build_active_generic_groups(session: AsyncSession) -> None:
+    await session.execute(delete(GenericProductGroupMember))
+    await session.execute(delete(GenericProductGroup))
+    await _build_generic_groups(
+        session,
+        offer_model=CatalogOffer,
+        group_model=GenericProductGroup,
+        member_model=GenericProductGroupMember,
     )
 
 
@@ -561,6 +699,88 @@ def serialize_product_preview(
     }
 
 
+def serialize_generic_group(group: GenericProductGroup | GenericProductGroupStaging) -> dict[str, Any]:
+    return {
+        "key": group.key,
+        "label": group.label,
+        "family": group.family,
+        "offer_count": group.offer_count,
+        "chain_count": group.chain_count,
+        "cheapest_price": round(float(group.cheapest_price), 2) if group.cheapest_price is not None else None,
+    }
+
+
+async def search_generic_groups(
+    session: AsyncSession,
+    query: str,
+    limit: int = 6,
+    chain_filter: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    normalized = normalize_text(query)
+    if len(normalized) < 3:
+        return []
+    tokens = [token for token in normalized.split() if len(token) >= 2]
+    if not tokens:
+        return []
+    chain_keys = _resolve_chain_keys(chain_filter)
+    if not chain_keys:
+        return []
+    conditions = _generic_token_conditions(tokens)
+    active_chain_count = func.count(func.distinct(GenericProductGroupMember.chain))
+    active_offer_count = func.count(GenericProductGroupMember.id)
+    cheapest_price = func.min(CatalogOffer.price)
+    stmt = (
+        select(
+            GenericProductGroup,
+            active_chain_count.label("active_chain_count"),
+            active_offer_count.label("active_offer_count"),
+            cheapest_price.label("active_cheapest_price"),
+        )
+        .join(
+            GenericProductGroupMember,
+            GenericProductGroupMember.group_key == GenericProductGroup.key,
+        )
+        .join(
+            CatalogOffer,
+            and_(
+                CatalogOffer.chain == GenericProductGroupMember.chain,
+                CatalogOffer.store_id == GenericProductGroupMember.store_id,
+                CatalogOffer.product_id == GenericProductGroupMember.product_id,
+            ),
+        )
+        .where(and_(*conditions))
+        .where(CatalogOffer.is_active.is_(True))
+        .where(CatalogOffer.chain.in_(chain_keys))
+        .group_by(
+            GenericProductGroup.key,
+            GenericProductGroup.family,
+            GenericProductGroup.label,
+            GenericProductGroup.search_text,
+            GenericProductGroup.offer_count,
+            GenericProductGroup.chain_count,
+            GenericProductGroup.cheapest_price,
+            GenericProductGroup.created_at,
+            GenericProductGroup.updated_at,
+        )
+        .having(active_chain_count >= 2)
+        .order_by(
+            active_chain_count.desc(),
+            active_offer_count.desc(),
+            cheapest_price.asc(),
+            GenericProductGroup.key.asc(),
+        )
+        .limit(limit)
+    )
+    groups = []
+    for group, chain_count, offer_count, price in (await session.execute(stmt)).all():
+        row = serialize_generic_group(group)
+        row["chain_count"] = int(chain_count or 0)
+        row["offer_count"] = int(offer_count or 0)
+        row["cheapest_price"] = round(float(price), 2) if price is not None else None
+        groups.append(row)
+    return groups
+
+
 async def suggest_products(
     session: AsyncSession,
     query: str,
@@ -619,11 +839,13 @@ async def search_products(
 ) -> dict[str, Any]:
     normalized, ordering, condition = _search_filters(query)
     if condition is None:
-        return {"query": query, "total": 0, "products": []}
+        return {"query": query, "total": 0, "products": [], "generic_groups": []}
 
     chain_keys = _resolve_chain_keys(chain_filter)
     if not chain_keys:
-        return {"query": query, "total": 0, "products": []}
+        return {"query": query, "total": 0, "products": [], "generic_groups": []}
+
+    generic_groups = await search_generic_groups(session, query, chain_filter=chain_keys)
 
     stmt = select(CanonicalProduct).where(_active_offer_exists(chain_keys)).where(condition)
     count = (
@@ -631,7 +853,7 @@ async def search_products(
     ).scalar_one()
 
     if not count:
-        return await _fuzzy_search_products(
+        result = await _fuzzy_search_products(
             session,
             query,
             normalized,
@@ -639,6 +861,8 @@ async def search_products(
             offset,
             chain_keys,
         )
+        result["generic_groups"] = generic_groups
+        return result
 
     products = list(
         (
@@ -657,7 +881,7 @@ async def search_products(
         for product in products
         if product.id in best_offers
     ]
-    return {"query": query, "total": int(count or 0), "products": serialized}
+    return {"query": query, "total": int(count or 0), "products": serialized, "generic_groups": generic_groups}
 
 
 async def load_product_detail(session: AsyncSession, product_id: int) -> dict[str, Any] | None:
@@ -808,15 +1032,33 @@ async def serialize_shopping_list_detail(
         ).scalars()
     )
     for item in items:
-        await session.refresh(item, attribute_names=["canonical_product"])
+        if item.canonical_product_id:
+            await session.refresh(item, attribute_names=["canonical_product"])
 
-    previews = await _preview_offer_map(
-        session, [item.canonical_product_id for item in items]
-    )
+    exact_ids = [item.canonical_product_id for item in items if item.canonical_product_id]
+    generic_keys = [item.generic_group_key for item in items if item.generic_group_key]
+    previews = await _preview_offer_map(session, exact_ids)
     best_offers, chain_counts = previews
+    generic_groups = {}
+    if generic_keys:
+        rows = (await session.execute(select(GenericProductGroup).where(GenericProductGroup.key.in_(generic_keys)))).scalars()
+        generic_groups = {group.key: group for group in rows}
 
     serialized_items = []
     for item in items:
+        if item.generic_group_key:
+            group = generic_groups.get(item.generic_group_key)
+            if not group:
+                continue
+            serialized_items.append(
+                {
+                    "id": item.id,
+                    "quantity": round(float(item.quantity), 3),
+                    "product": None,
+                    "generic_group": serialize_generic_group(group),
+                }
+            )
+            continue
         product = item.canonical_product
         offer = best_offers.get(product.id)
         if not offer:
@@ -830,6 +1072,7 @@ async def serialize_shopping_list_detail(
                     offer,
                     chain_counts.get(product.id, 0),
                 ),
+                "generic_group": None,
             }
         )
 
@@ -944,7 +1187,8 @@ async def compare_shopping_list(
         ).scalars()
     )
     for item in items:
-        await session.refresh(item, attribute_names=["canonical_product"])
+        if item.canonical_product_id:
+            await session.refresh(item, attribute_names=["canonical_product"])
 
     if not items:
         return {
@@ -955,12 +1199,13 @@ async def compare_shopping_list(
             "chains": [],
         }
 
-    product_ids = [item.canonical_product_id for item in items]
+    product_ids = [item.canonical_product_id for item in items if item.canonical_product_id]
+    generic_keys = [item.generic_group_key for item in items if item.generic_group_key]
     offers = list(
         (
             await session.execute(
                 select(CatalogOffer)
-                .where(CatalogOffer.canonical_product_id.in_(product_ids))
+                .where(CatalogOffer.canonical_product_id.in_(product_ids) if product_ids else False)
                 .where(CatalogOffer.is_active.is_(True))
                 .where(CatalogOffer.chain.in_(ACTIVE_CHAIN_KEYS))
                 .order_by(
@@ -974,10 +1219,35 @@ async def compare_shopping_list(
     )
 
     offers_by_store_product: dict[tuple[str, str, int], list[CatalogOffer]] = defaultdict(list)
+    offers_by_store_group: dict[tuple[str, str, str], list[CatalogOffer]] = defaultdict(list)
     stores_by_chain: dict[str, dict[str, str]] = defaultdict(dict)
     for offer in offers:
         offers_by_store_product[(offer.chain, offer.store_id, offer.canonical_product_id)].append(offer)
         stores_by_chain[offer.chain][offer.store_id] = offer.store_name
+
+    generic_groups: dict[str, GenericProductGroup] = {}
+    if generic_keys:
+        groups = (await session.execute(select(GenericProductGroup).where(GenericProductGroup.key.in_(generic_keys)))).scalars()
+        generic_groups = {group.key: group for group in groups}
+        rows = (
+            await session.execute(
+                select(GenericProductGroupMember.group_key, CatalogOffer)
+                .join(
+                    CatalogOffer,
+                    and_(
+                        CatalogOffer.chain == GenericProductGroupMember.chain,
+                        CatalogOffer.store_id == GenericProductGroupMember.store_id,
+                        CatalogOffer.product_id == GenericProductGroupMember.product_id,
+                    ),
+                )
+                .where(GenericProductGroupMember.group_key.in_(generic_keys))
+                .where(CatalogOffer.is_active.is_(True))
+                .where(CatalogOffer.chain.in_(ACTIVE_CHAIN_KEYS))
+            )
+        ).all()
+        for group_key, offer in rows:
+            offers_by_store_group[(offer.chain, offer.store_id, group_key)].append(offer)
+            stores_by_chain[offer.chain][offer.store_id] = offer.store_name
 
     chain_results: list[dict[str, Any]] = []
     for chain_key in ACTIVE_CHAIN_KEYS:
@@ -996,18 +1266,32 @@ async def compare_shopping_list(
             line_items: list[dict[str, Any]] = []
 
             for item in items:
-                product = item.canonical_product
-                candidates = offers_by_store_product.get(
-                    (chain_key, store_id, item.canonical_product_id),
-                    [],
-                )
+                if item.generic_group_key:
+                    group = generic_groups.get(item.generic_group_key)
+                    product_name = group.label if group else item.generic_group_key
+                    product_id = None
+                    image_url = None
+                    candidates = offers_by_store_group.get(
+                        (chain_key, store_id, item.generic_group_key),
+                        [],
+                    )
+                else:
+                    product = item.canonical_product
+                    product_name = product.display_name
+                    product_id = product.id
+                    image_url = product.image_url
+                    candidates = offers_by_store_product.get(
+                        (chain_key, store_id, item.canonical_product_id),
+                        [],
+                    )
                 if not candidates:
-                    missing_products.append(product.display_name)
+                    missing_products.append(product_name)
                     line_items.append(
                         {
                             "list_item_id": item.id,
-                            "canonical_product_id": product.id,
-                            "product_name": product.display_name,
+                            "canonical_product_id": product_id,
+                            "generic_group_key": item.generic_group_key,
+                            "product_name": product_name,
                             "quantity": round(float(item.quantity), 3),
                             "matched_name": None,
                             "unit_price": None,
@@ -1016,7 +1300,7 @@ async def compare_shopping_list(
                             "regular_line_total": None,
                             "deal_applied": False,
                             "deal_description": None,
-                            "image_url": product.image_url,
+                            "image_url": image_url,
                             "found": False,
                         }
                     )
@@ -1030,8 +1314,9 @@ async def compare_shopping_list(
                 line_items.append(
                     {
                         "list_item_id": item.id,
-                        "canonical_product_id": product.id,
-                        "product_name": product.display_name,
+                        "canonical_product_id": product_id,
+                        "generic_group_key": item.generic_group_key,
+                        "product_name": product_name,
                         "quantity": round(float(item.quantity), 3),
                         "matched_name": offer.name,
                         "unit_price": totals["unit_price"],
@@ -1040,7 +1325,7 @@ async def compare_shopping_list(
                         "regular_line_total": totals["regular_line_total"],
                         "deal_applied": totals["deal_applied"],
                         "deal_description": totals["deal_description"],
-                        "image_url": offer.image_url or product.image_url,
+                        "image_url": offer.image_url or image_url,
                         "found": True,
                     }
                 )

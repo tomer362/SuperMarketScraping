@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { compareList, deleteList, deleteListItem, getList, renameList, updateListItem } from '../api';
 import { formatCurrency, formatQuantity } from '../lib/format';
+import type { ShoppingListItem } from '../types';
 
 function quantityStep(isWeighable: boolean): number {
   return isWeighable ? 0.1 : 1;
@@ -23,6 +24,10 @@ function quantityUnitLabel(isWeighable: boolean, dimension?: string | null): str
     return 'יח׳';
   }
   return dimension === 'volume' ? 'ל׳' : 'ק״ג';
+}
+
+function listItemName(item: ShoppingListItem): string {
+  return item.product?.name ?? item.generic_group?.label ?? 'מוצר להשוואה';
 }
 
 export default function ListDetailPage() {
@@ -148,30 +153,34 @@ export default function ListDetailPage() {
               shoppingList.items.map((item) => (
                 <article key={item.id} className="rounded-[30px] border border-white/80 bg-white/95 p-4 shadow-sm">
                   {(() => {
-                    const isWeighable = item.product.is_weighable;
+                    const isWeighable = item.product?.is_weighable ?? false;
                     const step = quantityStep(isWeighable);
                     const min = quantityMin(isWeighable);
-                    const unitLabel = quantityUnitLabel(isWeighable, item.product.unit_dimension);
+                    const unitLabel = quantityUnitLabel(isWeighable, item.product?.unit_dimension);
+                    const name = listItemName(item);
 
                     return (
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex min-w-0 gap-4">
                       <div className="flex h-18 w-18 shrink-0 items-center justify-center overflow-hidden rounded-[22px] bg-slate-100">
-                        {item.product.image_url ? (
-                          <img src={item.product.image_url} alt={item.product.name} className="h-full w-full object-contain" />
+                        {item.product?.image_url ? (
+                          <img src={item.product.image_url} alt={name} className="h-full w-full object-contain" />
                         ) : (
                           <span className="text-2xl">🛒</span>
                         )}
                       </div>
                       <div className="min-w-0">
-                        <p className="line-clamp-2 text-base font-black text-slate-900">{item.product.name}</p>
+                        <p className="line-clamp-2 text-base font-black text-slate-900">{name}</p>
                         <p className="mt-1 text-sm text-slate-500">
-                          {item.product.brand ? `${item.product.brand} · ` : ''}
-                          {item.product.unit_description ?? 'מוצר להשוואה'}
+                          {item.product
+                            ? `${item.product.brand ? `${item.product.brand} · ` : ''}${item.product.unit_description ?? 'מוצר להשוואה'}`
+                            : `${item.generic_group?.chain_count ?? 0} רשתות · ${item.generic_group?.offer_count ?? 0} הצעות תואמות`}
                         </p>
-                        <p className="mt-2 text-sm font-bold text-sky-700">
-                          החל מ-{formatCurrency(item.product.cheapest_price)}
-                        </p>
+                        {(item.product?.cheapest_price != null || item.generic_group?.cheapest_price != null) && (
+                          <p className="mt-2 text-sm font-bold text-sky-700">
+                            החל מ-{formatCurrency(item.product?.cheapest_price ?? item.generic_group?.cheapest_price ?? null)}
+                          </p>
+                        )}
                       </div>
                     </div>
 
@@ -185,12 +194,12 @@ export default function ListDetailPage() {
                           })
                         }
                         className="h-11 w-11 rounded-full border border-slate-200 bg-white text-lg font-black text-slate-700"
-                        aria-label={`הפחת כמות עבור ${item.product.name}`}
+                        aria-label={`הפחת כמות עבור ${name}`}
                       >
                         -
                       </button>
                       <label className="sr-only" htmlFor={`quantity-${item.id}`}>
-                        כמות עבור {item.product.name}
+                        כמות עבור {name}
                       </label>
                       <input
                         id={`quantity-${item.id}`}
@@ -220,7 +229,7 @@ export default function ListDetailPage() {
                           })
                         }
                         className="h-11 w-11 rounded-full border border-slate-200 bg-white text-lg font-black text-slate-700"
-                        aria-label={`הגדל כמות עבור ${item.product.name}`}
+                        aria-label={`הגדל כמות עבור ${name}`}
                       >
                         +
                       </button>

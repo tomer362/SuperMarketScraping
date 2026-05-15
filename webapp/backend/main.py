@@ -36,7 +36,7 @@ from catalog_service import (
     suggest_products,
 )
 from db import async_session_factory, create_tables, dispose_engine, get_session
-from models import CanonicalProduct, ShoppingList, ShoppingListItem, User
+from models import CanonicalProduct, GenericProductGroup, ShoppingList, ShoppingListItem, User
 from schemas import (
     AuthPayload,
     CatalogStatusOut,
@@ -358,15 +358,23 @@ async def add_list_item(
     shopping_list = await get_user_list(session, user.id, shopping_list_id)
     if not shopping_list:
         raise HTTPException(status_code=404, detail="Shopping list not found")
-    product = await session.get(CanonicalProduct, payload.canonical_product_id)
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
+    if bool(payload.canonical_product_id) == bool(payload.generic_group_key):
+        raise HTTPException(status_code=400, detail="Provide exactly one product or generic group")
+    if payload.canonical_product_id:
+        product = await session.get(CanonicalProduct, payload.canonical_product_id)
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found")
+    else:
+        group = await session.get(GenericProductGroup, payload.generic_group_key)
+        if not group:
+            raise HTTPException(status_code=404, detail="Generic group not found")
 
     existing = (
         await session.execute(
             select(ShoppingListItem).where(
                 ShoppingListItem.shopping_list_id == shopping_list_id,
                 ShoppingListItem.canonical_product_id == payload.canonical_product_id,
+                ShoppingListItem.generic_group_key == payload.generic_group_key,
             )
         )
     ).scalar_one_or_none()
@@ -376,6 +384,7 @@ async def add_list_item(
         item = ShoppingListItem(
             shopping_list_id=shopping_list_id,
             canonical_product_id=payload.canonical_product_id,
+            generic_group_key=payload.generic_group_key,
             quantity=payload.quantity,
         )
         session.add(item)

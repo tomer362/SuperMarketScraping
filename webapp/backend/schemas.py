@@ -84,10 +84,20 @@ class ProductPreviewOut(BaseModel):
     has_deal: bool
 
 
+class GenericProductGroupOut(BaseModel):
+    key: str
+    label: str
+    family: str
+    offer_count: int
+    chain_count: int
+    cheapest_price: float | None = None
+
+
 class ProductSearchResultOut(BaseModel):
     query: str
     total: int
     products: list[ProductPreviewOut]
+    generic_groups: list[GenericProductGroupOut] = []
 
 
 class ChainOfferOut(BaseModel):
@@ -136,7 +146,8 @@ class ShoppingListUpdateIn(BaseModel):
 
 
 class ShoppingListItemCreateIn(BaseModel):
-    canonical_product_id: int
+    canonical_product_id: int | None = None
+    generic_group_key: str | None = None
     quantity: float = Field(default=1.0, ge=0.1, le=999)
 
 
@@ -147,7 +158,8 @@ class ShoppingListItemUpdateIn(BaseModel):
 class ShoppingListItemOut(BaseModel):
     id: int
     quantity: float
-    product: ProductPreviewOut
+    product: ProductPreviewOut | None = None
+    generic_group: GenericProductGroupOut | None = None
 
 
 class ShoppingListSummaryOut(BaseModel):
@@ -164,7 +176,8 @@ class ShoppingListDetailOut(ShoppingListSummaryOut):
 
 class BasketComparisonLineOut(BaseModel):
     list_item_id: int
-    canonical_product_id: int
+    canonical_product_id: int | None = None
+    generic_group_key: str | None = None
     product_name: str
     quantity: float
     matched_name: str | None = None

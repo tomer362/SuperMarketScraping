@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from catalog_service import deactivate_missing_offers_for_chain, upsert_catalog_products
+from catalog_service import build_active_generic_groups, deactivate_missing_offers_for_chain, upsert_catalog_products
 from models import CatalogRefreshRun, CanonicalProduct
 
 
@@ -409,6 +409,7 @@ async def seed_demo_catalog(session: AsyncSession) -> None:
     for chain in sorted({product["chain"] for product in DEMO_PRODUCTS}):
         store_ids = {product["store_id"] for product in DEMO_PRODUCTS if product["chain"] == chain}
         await deactivate_missing_offers_for_chain(session, chain, run.id, store_ids)
+    await build_active_generic_groups(session)
     run.status = "done"
     run.products_upserted = products_upserted
     run.finished_at = run.started_at

@@ -56,10 +56,20 @@ export interface ProductPreview {
   has_deal: boolean;
 }
 
+export interface GenericProductGroup {
+  key: string;
+  label: string;
+  family: string;
+  offer_count: number;
+  chain_count: number;
+  cheapest_price?: number | null;
+}
+
 export interface ProductSearchResult {
   query: string;
   total: number;
   products: ProductPreview[];
+  generic_groups?: GenericProductGroup[];
 }
 
 export interface Deal {
@@ -121,7 +131,8 @@ export interface ShoppingListSummary {
 export interface ShoppingListItem {
   id: number;
   quantity: number;
-  product: ProductPreview;
+  product?: ProductPreview | null;
+  generic_group?: GenericProductGroup | null;
 }
 
 export interface ShoppingListDetail extends ShoppingListSummary {
@@ -130,7 +141,8 @@ export interface ShoppingListDetail extends ShoppingListSummary {
 
 export interface BasketComparisonLine {
   list_item_id: number;
-  canonical_product_id: number;
+  canonical_product_id?: number | null;
+  generic_group_key?: string | null;
   product_name: string;
   quantity: number;
   matched_name?: string | null;

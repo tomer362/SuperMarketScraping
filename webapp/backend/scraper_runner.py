@@ -15,7 +15,10 @@ if str(_PROJECT_ROOT) not in sys.path:
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from catalog_service import (
+    build_staging_generic_groups,
+    clear_staging_generic_groups,
     clear_staging_offers,
+    replace_active_generic_groups_from_staging,
     replace_active_offers_from_staging,
     upsert_catalog_products,
 )
@@ -79,6 +82,7 @@ async def run_full_refresh(
     await session.flush()
 
     await clear_staging_offers(session)
+    await clear_staging_generic_groups(session)
     await session.commit()
 
     tasks = [asyncio.create_task(_run_chain(chain), name=chain.key) for chain in chains]
@@ -121,11 +125,15 @@ async def run_full_refresh(
 
     all_chains_succeeded = len(run.chains_failed) == 0 and len(chains_scraped) == len(chains)
     if all_chains_succeeded:
+        await build_staging_generic_groups(session)
         await replace_active_offers_from_staging(session)
+        await replace_active_generic_groups_from_staging(session)
         await clear_staging_offers(session)
+        await clear_staging_generic_groups(session)
         run.status = "done"
     else:
         await clear_staging_offers(session)
+        await clear_staging_generic_groups(session)
         run.status = "failed"
         run.errors.append("swap_skipped: staged catalog not activated because one or more chains failed")
 

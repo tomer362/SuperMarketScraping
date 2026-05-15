@@ -189,6 +189,56 @@ class CatalogOfferStaging(TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
+class GenericProductGroup(TimestampMixin, Base):
+    __tablename__ = "generic_product_groups"
+
+    key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    family: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    search_text: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    offer_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    chain_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cheapest_price: Mapped[float | None] = mapped_column(Float)
+
+
+class GenericProductGroupStaging(TimestampMixin, Base):
+    __tablename__ = "generic_product_groups_staging"
+
+    key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    family: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    search_text: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    offer_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    chain_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cheapest_price: Mapped[float | None] = mapped_column(Float)
+
+
+class GenericProductGroupMember(Base):
+    __tablename__ = "generic_product_group_members"
+    __table_args__ = (
+        UniqueConstraint("group_key", "chain", "store_id", "product_id", name="uq_generic_member_offer"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_key: Mapped[str] = mapped_column(String(512), index=True, nullable=False)
+    chain: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    store_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    product_id: Mapped[str] = mapped_column(String(128), nullable=False)
+
+
+class GenericProductGroupMemberStaging(Base):
+    __tablename__ = "generic_product_group_members_staging"
+    __table_args__ = (
+        UniqueConstraint("group_key", "chain", "store_id", "product_id", name="uq_stage_generic_member_offer"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_key: Mapped[str] = mapped_column(String(512), index=True, nullable=False)
+    chain: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    store_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    product_id: Mapped[str] = mapped_column(String(128), nullable=False)
+
+
 class ShoppingList(TimestampMixin, Base):
     __tablename__ = "shopping_lists"
 
@@ -210,6 +260,11 @@ class ShoppingListItem(Base):
             "canonical_product_id",
             name="uq_list_product",
         ),
+        UniqueConstraint(
+            "shopping_list_id",
+            "generic_group_key",
+            name="uq_list_generic_group",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -217,8 +272,9 @@ class ShoppingListItem(Base):
         ForeignKey("shopping_lists.id"), index=True, nullable=False
     )
     canonical_product_id: Mapped[int] = mapped_column(
-        ForeignKey("canonical_products.id"), index=True, nullable=False
+        ForeignKey("canonical_products.id"), index=True, nullable=True
     )
+    generic_group_key: Mapped[str | None] = mapped_column(String(512), index=True)
     quantity: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

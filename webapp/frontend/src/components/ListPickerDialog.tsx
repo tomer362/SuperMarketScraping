@@ -1,22 +1,42 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { addListItem, createList, getLists } from '../api';
+import { addGenericGroupItem, addListItem, createList, getLists } from '../api';
 import { formatQuantity } from '../lib/format';
-import type { ProductDetail, ShoppingListSummary } from '../types';
+import type { GenericProductGroup, ProductDetail, ShoppingListSummary } from '../types';
+
+type ListPickerItem =
+  | { kind: 'product'; product: ProductDetail }
+  | { kind: 'generic'; group: GenericProductGroup };
 
 interface ListPickerDialogProps {
-  product: ProductDetail;
+  product?: ProductDetail;
+  group?: GenericProductGroup;
   isOpen: boolean;
   onClose: () => void;
 }
 
-export default function ListPickerDialog({ product, isOpen, onClose }: ListPickerDialogProps) {
+export default function ListPickerDialog({ product, group, isOpen, onClose }: ListPickerDialogProps) {
   const [newListName, setNewListName] = useState('');
   const queryClient = useQueryClient();
   const listsQuery = useQuery({ queryKey: ['lists'], queryFn: getLists, enabled: isOpen });
+  const item: ListPickerItem | null = product
+    ? { kind: 'product', product }
+    : group
+      ? { kind: 'generic', group }
+      : null;
+
+  const addItemToList = async (shoppingListId: number) => {
+    if (!item) {
+      throw new Error('Missing list item');
+    }
+    if (item.kind === 'product') {
+      return addListItem(shoppingListId, item.product.id, 1);
+    }
+    return addGenericGroupItem(shoppingListId, item.group.key, 1);
+  };
 
   const addMutation = useMutation({
-    mutationFn: async (shoppingList: ShoppingListSummary) => addListItem(shoppingList.id, product.id, 1),
+    mutationFn: async (shoppingList: ShoppingListSummary) => addItemToList(shoppingList.id),
     onSuccess: async (_, shoppingList) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['lists'] }),
@@ -29,7 +49,7 @@ export default function ListPickerDialog({ product, isOpen, onClose }: ListPicke
   const createMutation = useMutation({
     mutationFn: async () => {
       const created = await createList(newListName.trim());
-      return addListItem(created.id, product.id, 1);
+      return addItemToList(created.id);
     },
     onSuccess: async () => {
       setNewListName('');
@@ -38,9 +58,14 @@ export default function ListPickerDialog({ product, isOpen, onClose }: ListPicke
     },
   });
 
-  if (!isOpen) {
+  if (!isOpen || !item) {
     return null;
   }
+
+  const itemName = item.kind === 'product' ? item.product.name : item.group.label;
+  const itemSubtitle = item.kind === 'generic'
+    ? `${item.group.chain_count} רשתות · ${item.group.offer_count} הצעות`
+    : undefined;
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/45 px-3 pb-3 sm:items-center">
@@ -49,7 +74,8 @@ export default function ListPickerDialog({ product, isOpen, onClose }: ListPicke
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-sky-600">רשימות</p>
             <h2 className="mt-1 text-xl font-black text-slate-900">הוסף/י את המוצר</h2>
-            <p className="mt-1 text-sm text-slate-500">{product.name}</p>
+            <p className="mt-1 text-sm text-slate-500">{itemName}</p>
+            {itemSubtitle && <p className="mt-1 text-xs font-semibold text-emerald-700">{itemSubtitle}</p>}
           </div>
           <button
             type="button"

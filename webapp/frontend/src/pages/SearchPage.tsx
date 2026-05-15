@@ -3,8 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getChains, searchProducts } from '../api';
 import { resolvePreferredChains, subscribePreferredChainsChange } from '../app/chainPreferences';
+import ListPickerDialog from '../components/ListPickerDialog';
 import ProductPreviewCard from '../components/ProductPreviewCard';
 import SearchAutocomplete from '../components/SearchAutocomplete';
+import { formatCurrency } from '../lib/format';
+import type { GenericProductGroup } from '../types';
 
 function useDebouncedValue<T>(value: T, delay: number) {
   const [debouncedValue, setDebouncedValue] = useState(value);
@@ -23,6 +26,7 @@ export default function SearchPage() {
   const [submittedQuery, setSubmittedQuery] = useState('');
   const [offset, setOffset] = useState(0);
   const [selectedChains, setSelectedChains] = useState<string[]>([]);
+  const [selectedGenericGroup, setSelectedGenericGroup] = useState<GenericProductGroup | null>(null);
 
   const chainsQuery = useQuery({ queryKey: ['chains'], queryFn: getChains });
   const activeChains = useMemo(
@@ -67,8 +71,10 @@ export default function SearchPage() {
     }
     return Math.max(1, Math.ceil(resultsQuery.data.total / 20));
   }, [resultsQuery.data]);
+  const genericGroups = resultsQuery.data?.generic_groups ?? [];
 
   return (
+    <>
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1.1fr)_20rem]">
       <section className="space-y-4">
         <div className="rounded-[34px] border border-white/80 bg-white/95 p-5 shadow-[0_20px_60px_-36px_rgba(15,23,42,0.35)] sm:p-6">
@@ -150,6 +156,43 @@ export default function SearchPage() {
               </div>
             </div>
 
+            {genericGroups.length > 0 && (
+              <section className="space-y-3 rounded-[30px] border border-emerald-100 bg-emerald-50/70 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700">Comparable groups</p>
+                    <h4 className="text-lg font-black text-slate-900">מוצרים כלליים להשוואה</h4>
+                  </div>
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-emerald-700">
+                    לפי גודל וסוג זהים
+                  </span>
+                </div>
+                <div className="grid gap-3 xl:grid-cols-2">
+                  {genericGroups.map((group) => (
+                    <button
+                      key={group.key}
+                      type="button"
+                      onClick={() => setSelectedGenericGroup(group)}
+                      className="rounded-[24px] border border-white bg-white/95 p-4 text-right shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+                    >
+                      <p className="text-base font-black text-slate-900">{group.label}</p>
+                      <p className="mt-1 text-sm text-slate-500">
+                        {group.chain_count} רשתות · {group.offer_count} הצעות תואמות
+                      </p>
+                      <div className="mt-3 flex items-end justify-between gap-3">
+                        <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-700">
+                          הוסף/י כרכיב כללי
+                        </span>
+                        <span className="text-lg font-black text-emerald-700">
+                          {group.cheapest_price != null ? formatCurrency(group.cheapest_price) : 'מחיר משתנה'}
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {resultsQuery.data.products.length === 0 ? (
               <div className="rounded-[30px] border border-dashed border-slate-200 bg-white/90 px-5 py-12 text-center text-slate-500 shadow-sm">
                 לא מצאנו מוצרים תואמים. נסו מונח אחר.
@@ -213,5 +256,11 @@ export default function SearchPage() {
         </div>
       </aside>
     </div>
+    <ListPickerDialog
+      group={selectedGenericGroup ?? undefined}
+      isOpen={selectedGenericGroup !== null}
+      onClose={() => setSelectedGenericGroup(null)}
+    />
+    </>
   );
 }

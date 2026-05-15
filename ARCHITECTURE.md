@@ -186,11 +186,11 @@ Request body: `{"store": <internet_store_id>, "q": "", "from": <offset>, "size":
 ## Web App
 
 ### Stack
-- **Backend**: FastAPI + uvicorn
-- **Database**: PostgreSQL with asyncpg + SQLAlchemy async ORM
-- **Fuzzy Search**: PostgreSQL `pg_trgm` extension for typo-tolerant product search
+- **Backend**: FastAPI + uvicorn locally, FastAPI serverless entrypoint on Vercel
+- **Database**: PostgreSQL with asyncpg + SQLAlchemy async ORM, SQLite for local/test runs
+- **Search**: normalized Hebrew text search, barcode exact matching, typo-tolerant fuzzy fallback
 - **Frontend**: React + Vite + TypeScript
-- **Deployment**: Docker Compose (3 services: api, db, frontend)
+- **Deployment**: Docker Compose locally or Vercel static frontend + Python API rewrite
 
 ### Services
 | Service | Port | Directory |
@@ -202,13 +202,45 @@ Request body: `{"store": <internet_store_id>, "q": "", "from": <offset>, "size":
 ### Features
 1. **Product Search** — Search products across all chains with fuzzy matching
 2. **Price Comparison** — See the same product across multiple stores
-3. **Shopping List** — Create lists and see which chain offers the best price per item
-4. **Background Scraping** — Periodic scrapes (every 6 hours by default) refresh product data
+3. **Generic Comparable Groups** — Choose commodity-style groups such as `חלב 3% 1 ליטר` when brand should not matter
+4. **Shopping List** — Create lists and see which chain offers the best price per item
+5. **Background Scraping** — Periodic scrapes refresh product data through a staged catalog swap
 
 ### Database Schema
-- `products` table: product metadata (name, barcode, image_url, etc.)
-- `store_products` table: per-store pricing and deals
+- `canonical_products`: exact product identity used for barcode/SKU-style comparison
+- `catalog_offers`: active per-chain/per-store prices and deals for exact products
+- `catalog_offers_staging`: full refresh target table; active offers are replaced only after a successful refresh
+- `generic_product_groups`: materialized comparable commodity groups, separate from exact products
+- `generic_product_group_members`: offer-level membership for each generic group
+- `generic_product_groups_staging` and `generic_product_group_members_staging`: staged generic groups swapped atomically with staged offers
 - `shopping_lists` table: user-created shopping lists
+- `shopping_list_items`: list items reference either `canonical_product_id` or `generic_group_key`, never both
+
+### Product Identity
+- Exact products are matched first by normalized barcode when present.
+- Non-barcode products use a normalized match key built from brand/manufacturer, product-name signature, unit dimension, SI quantity bucket, and unit.
+- Hebrew apostrophe variants are normalized for search and matching (`קוטג`, `קוטג׳`, `קוטג'`, `קוטג’`).
+- Exact product cards remain exact; the app never silently converts them into generic groups.
+
+### Generic Comparable Groups
+- Generic groups are a separate result type and must be explicitly added to a shopping list.
+- Group membership is offer-based, not canonical-product-based, so each chain/store offer is classified independently.
+- Brand is ignored only for approved commodity families where this is safe enough for comparison.
+- Tier 1 families currently include milk, eggs, sugar, flour, rice, pasta, salt, tuna, tomato paste, cottage, white cheese, and selected weighable meat/fish families.
+- Safety flags keep materially different products apart: size/quantity, fat percentage, organic, lactose-free, gluten-free, goat milk, kosher tier, free-range eggs, frozen/fresh state.
+- Group cards expose coverage metadata separately: chain count, offer count, and cheapest current price.
+
+### Catalog Refresh
+- Refreshes scrape into staging tables first.
+- The active catalog remains readable while refresh is running.
+- Active offers and generic groups are replaced only when all active chains complete successfully.
+- If any chain fails, staging is cleared and the previous active catalog remains available.
+- Vercel deployments trigger refresh via `GET /api/catalog/refresh/cron` with `CATALOG_REFRESH_TOKEN` or `CRON_SECRET` when configured.
+
+### Quantity Pricing
+- Non-weighable quantities are unit counts.
+- Weighable mass quantities are kilograms; weighable volume quantities are liters.
+- Basket comparison scales weighable line totals proportionally from each offer's `unit_qty_si`.
 
 ### Environment
 ```
