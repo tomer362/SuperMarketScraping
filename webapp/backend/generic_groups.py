@@ -66,6 +66,91 @@ def _contains_any(text: str, tokens: set[str]) -> bool:
     return any(token in words or token in text for token in tokens)
 
 
+def _variant_for_family(family: str, name: str, raw_name: str | None) -> tuple[str | None, str | None]:
+    fat = _fat(raw_name or "")
+
+    if family in {"cottage", "white_cheese"} and fat:
+        return f"fat:{fat}", f"{fat}%"
+
+    if family == "sugar":
+        if _contains_any(name, {"חום", "חומה", "דמררה", "קנים"}):
+            return "brown", "חום"
+        if "אבקת סוכר" in name:
+            return "powdered", "אבקת"
+        return "white", None
+
+    if family == "flour":
+        if "קמח שקדים" in name:
+            return "almond", "שקדים"
+        if _contains_any(name, {"כוסמין"}):
+            return "spelt", "כוסמין"
+        if "מלא" in name or "מלאה" in name:
+            return "whole_wheat", "מלא"
+        if _contains_any(name, {"תופח"}):
+            return "self_rising", "תופח"
+        if _contains_any(name, {"לחם"}):
+            return "bread", "לחם"
+        return "white_wheat", None
+
+    if family == "rice":
+        for key, label, tokens in (
+            ("basmati", "בסמטי", {"בסמטי"}),
+            ("jasmine", "יסמין", {"יסמין", "גסמין"}),
+            ("sushi", "סושי", {"סושי"}),
+            ("round", "עגול", {"עגול"}),
+            ("whole", "מלא", {"מלא", "מלאה"}),
+            ("persian", "פרסי", {"פרסי"}),
+        ):
+            if _contains_any(name, tokens):
+                return key, label
+        return "plain", None
+
+    if family == "salt":
+        if _contains_any(name, {"גס", "גבישי"}):
+            return "coarse", "גס"
+        if _contains_any(name, {"דק", "שולחן"}):
+            return "fine", "דק"
+        return "plain", None
+
+    if family == "tuna":
+        if _contains_any(name, {"שמן", "בשמן"}):
+            return "oil", "בשמן"
+        if _contains_any(name, {"מים", "במים"}):
+            return "water", "במים"
+        return "plain", None
+
+    if family == "pasta":
+        if "מלא" in name or "מלאה" in name:
+            return "whole_wheat", "מלאה"
+        return None, None
+
+    return None, None
+
+
+def _meat_cut(family: str, name: str, raw_name: str | None) -> tuple[str, str | None]:
+    if family == "chicken":
+        for key, label, tokens in (
+            ("breast", "חזה", {"חזה"}),
+            ("thigh", "ירך", {"ירך", "ירכיים", "פרגית", "פרגיות"}),
+            ("drumstick", "שוקיים", {"שוק", "שוקיים"}),
+            ("wing", "כנפיים", {"כנף", "כנפיים"}),
+            ("whole", "שלם", {"שלם"}),
+        ):
+            if _contains_any(name, tokens):
+                return key, label
+        return "unspecified", None
+    if family == "salmon":
+        if _contains_any(name, {"מעושן"}):
+            return "smoked", "מעושן"
+        if _contains_any(name, {"פילה"}):
+            return "fillet", "פילה"
+        return "unspecified", None
+    if family == "ground_beef":
+        fat = _fat(raw_name or "")
+        return (f"fat:{fat}", f"{fat}%") if fat else ("unspecified", None)
+    return "unspecified", None
+
+
 def classify_generic_offer(offer: Any) -> GenericGroup | None:
     raw_name = getattr(offer, "name", None) if not isinstance(offer, dict) else offer.get("name")
     name = normalize_text(raw_name)
@@ -147,6 +232,9 @@ def classify_generic_offer(offer: Any) -> GenericGroup | None:
         if family in {"cottage", "white_cheese"} and unit_dimension != "mass":
             continue
         flags = [f"qty:{qty}"]
+        variant_key, variant_label = _variant_for_family(family, name, raw_name)
+        if variant_key:
+            flags.append(variant_key)
         if organic:
             flags.append("organic")
         if gluten_free:
@@ -154,6 +242,8 @@ def classify_generic_offer(offer: Any) -> GenericGroup | None:
         if kosher:
             flags.append("kosher")
         label = f"{label_base} {_size_label(unit_dimension, qty)}"
+        if variant_label:
+            label += f" {variant_label}"
         if organic:
             label += " אורגני"
         if gluten_free:
@@ -172,15 +262,17 @@ def classify_generic_offer(offer: Any) -> GenericGroup | None:
             frozen = "קפוא" in name
             freshness = "frozen" if frozen else "fresh"
             freshness_label = "קפוא" if frozen else "טרי"
+            cut_key, cut_label = _meat_cut(family, name, raw_name)
+            cut_label_suffix = f" {cut_label}" if cut_label else ""
             if is_weighable:
-                key = f"{family}|weight|{freshness}"
-                return GenericGroup(key=key, family=family, label=f"{label} במשקל {freshness_label}")
+                key = f"{family}|weight|{freshness}|cut:{cut_key}"
+                return GenericGroup(key=key, family=family, label=f"{label}{cut_label_suffix} במשקל {freshness_label}")
             if qty:
-                key = f"{family}|packaged|{freshness}|qty:{qty}"
+                key = f"{family}|packaged|{freshness}|cut:{cut_key}|qty:{qty}"
                 return GenericGroup(
                     key=key,
                     family=family,
-                    label=f"{label} ארוז {_size_label(unit_dimension, qty)} {freshness_label}",
+                    label=f"{label}{cut_label_suffix} ארוז {_size_label(unit_dimension, qty)} {freshness_label}",
                 )
 
     return None
