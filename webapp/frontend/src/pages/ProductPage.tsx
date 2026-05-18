@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getProductDetail } from '../api';
 import ListPickerDialog from '../components/ListPickerDialog';
 import { formatComparisonUnit, formatCurrency } from '../lib/format';
+import { displayableImageUrl } from '../lib/images';
 
 export default function ProductPage() {
   const { productId } = useParams();
@@ -34,6 +35,7 @@ export default function ProductPage() {
       ? requestedQuantity
       : 1;
   const defaultQuantityDimension = defaultQuantity === 1 ? null : requestedDimension;
+  const imageUrl = displayableImageUrl(product.image_url);
 
   return (
     <>
@@ -42,13 +44,11 @@ export default function ProductPage() {
           <div className="rounded-[34px] border border-white/80 bg-white/95 p-5 shadow-[0_20px_60px_-36px_rgba(15,23,42,0.35)] sm:p-6">
             <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
               <div className="flex gap-4">
-                <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-[26px] bg-slate-100">
-                  {product.image_url ? (
-                    <img src={product.image_url} alt={product.name} className="h-full w-full object-contain" />
-                  ) : (
-                    <span className="text-4xl">🛒</span>
-                  )}
-                </div>
+                {imageUrl && (
+                  <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-[26px] bg-slate-100">
+                    <img src={imageUrl} alt={product.name} className="h-full w-full object-contain" />
+                  </div>
+                )}
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-600">Exact product</p>
                   <h2 className="mt-2 text-2xl font-black text-slate-900 sm:text-3xl">{product.name}</h2>
@@ -107,6 +107,16 @@ export default function ProductPage() {
                     <p className="mt-1 text-sm text-slate-500">{offer.name}</p>
                     {offer.deal?.deal_description && (
                       <p className="mt-2 text-sm font-semibold text-emerald-700">{offer.deal.deal_description}</p>
+                    )}
+                    {offer.product_url && (
+                      <a
+                        href={offer.product_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-3 inline-flex text-sm font-bold text-sky-700 transition hover:text-sky-900"
+                      >
+                        לעמוד המוצר בסופר
+                      </a>
                     )}
                   </div>
 

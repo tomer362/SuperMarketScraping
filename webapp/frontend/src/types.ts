@@ -104,6 +104,7 @@ export interface ChainOffer {
   price_per_base_unit?: number | null;
   brand?: string | null;
   image_url?: string | null;
+  product_url?: string | null;
   deal?: Deal | null;
   scraped_at: string;
 }
@@ -168,6 +169,7 @@ export interface BasketComparisonLine {
   deal_applied: boolean;
   deal_description?: string | null;
   image_url?: string | null;
+  product_url?: string | null;
   found: boolean;
 }
 

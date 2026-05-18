@@ -36,5 +36,6 @@ describe('ProductPreviewCard', () => {
     expect(screen.getByText('קוטג׳ תנובה 250 גרם')).toBeInTheDocument();
     expect(screen.getByText('יש מבצע')).toBeInTheDocument();
     expect(screen.getByText('רמי לוי')).toBeInTheDocument();
+    expect(screen.queryByText('🛒')).not.toBeInTheDocument();
   });
 });

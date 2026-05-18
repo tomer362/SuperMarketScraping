@@ -121,6 +121,7 @@ class ChainOfferOut(BaseModel):
     price_per_base_unit: float | None = None
     brand: str | None = None
     image_url: str | None = None
+    product_url: str | None = None
     deal: DealOut | None = None
     scraped_at: str
 
@@ -203,6 +204,7 @@ class BasketComparisonLineOut(BaseModel):
     deal_applied: bool = False
     deal_description: str | None = None
     image_url: str | None = None
+    product_url: str | None = None
     found: bool
 
 

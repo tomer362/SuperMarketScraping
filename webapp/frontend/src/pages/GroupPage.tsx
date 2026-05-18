@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getGenericGroupDetail } from '../api';
 import ListPickerDialog from '../components/ListPickerDialog';
 import { formatComparisonUnit, formatCurrency } from '../lib/format';
+import { displayableImageUrl } from '../lib/images';
 
 function routeGroupKey(value: string | undefined): string {
   if (!value) {
@@ -40,6 +41,7 @@ export default function GroupPage() {
   const requestedQuantity = Number(searchParams.get('qty') ?? 1);
   const requestedDimension = searchParams.get('dim');
   const defaultQuantity = Number.isFinite(requestedQuantity) && requestedQuantity > 0 ? requestedQuantity : 1;
+  const imageUrl = displayableImageUrl(group.offers[0]?.image_url);
 
   return (
     <>
@@ -48,13 +50,11 @@ export default function GroupPage() {
           <div className="rounded-[34px] border border-white/80 bg-white/95 p-5 shadow-[0_20px_60px_-36px_rgba(15,23,42,0.35)] sm:p-6">
             <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
               <div className="flex gap-4">
-                <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-[26px] bg-emerald-50">
-                  {group.offers[0]?.image_url ? (
-                    <img src={group.offers[0].image_url} alt={group.label} className="h-full w-full object-contain" />
-                  ) : (
-                    <span className="text-4xl">🛒</span>
-                  )}
-                </div>
+                {imageUrl && (
+                  <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-[26px] bg-emerald-50">
+                    <img src={imageUrl} alt={group.label} className="h-full w-full object-contain" />
+                  </div>
+                )}
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-700">
                     Comparable group
@@ -115,6 +115,16 @@ export default function GroupPage() {
                     <p className="mt-1 text-sm text-slate-500">{offer.name}</p>
                     {offer.deal?.deal_description && (
                       <p className="mt-2 text-sm font-semibold text-emerald-700">{offer.deal.deal_description}</p>
+                    )}
+                    {offer.product_url && (
+                      <a
+                        href={offer.product_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-3 inline-flex text-sm font-bold text-sky-700 transition hover:text-sky-900"
+                      >
+                        לעמוד המוצר בסופר
+                      </a>
                     )}
                   </div>
 

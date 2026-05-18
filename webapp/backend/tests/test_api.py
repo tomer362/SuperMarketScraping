@@ -79,6 +79,8 @@ async def test_generic_group_detail_returns_matched_offers(authenticated_client)
     assert 'unit_dimension' in first_offer
     assert 'unit_qty_si' in first_offer
     assert 'is_weighable' in first_offer
+    assert first_offer['product_url']
+    assert first_offer['product_url'].startswith('https://')
 
 
 @pytest.mark.asyncio

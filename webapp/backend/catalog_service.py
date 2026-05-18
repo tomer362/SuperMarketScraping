@@ -26,6 +26,7 @@ from models import (
     ShoppingListItem,
 )
 from generic_groups import classify_generic_offer
+from product_links import build_product_url
 from settings import get_settings
 from text_utils import build_match_key, build_search_text, normalize_barcode, normalize_text
 
@@ -925,6 +926,7 @@ def serialize_chain_offer(offer: CatalogOffer) -> dict[str, Any]:
         "price_per_base_unit": offer.price_per_base_unit,
         "brand": offer.brand,
         "image_url": offer.image_url,
+        "product_url": build_product_url(offer.chain, offer.product_id, offer.barcode, offer.name),
         "deal": offer.deal,
         "scraped_at": offer.scraped_at,
     }
@@ -1782,6 +1784,7 @@ async def compare_shopping_list(
                             "deal_applied": False,
                             "deal_description": None,
                             "image_url": image_url,
+                            "product_url": None,
                             "found": False,
                         }
                     )
@@ -1821,6 +1824,7 @@ async def compare_shopping_list(
                         "deal_applied": totals["deal_applied"],
                         "deal_description": totals["deal_description"],
                         "image_url": offer.image_url or image_url,
+                        "product_url": build_product_url(offer.chain, offer.product_id, offer.barcode, offer.name),
                         "found": True,
                     }
                 )
