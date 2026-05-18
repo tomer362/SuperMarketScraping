@@ -47,7 +47,7 @@ describe('SearchPage', () => {
     vi.restoreAllMocks();
   });
 
-  it('points users to the global search when no query exists', async () => {
+  it('does not render instructional filler when no query exists', async () => {
     vi.spyOn(api, 'getChains').mockResolvedValue([chain]);
 
     renderWithQueryClient(
@@ -56,7 +56,9 @@ describe('SearchPage', () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText('חפשו מוצר מהשורה העליונה')).toBeInTheDocument();
+    await waitFor(() => expect(api.getChains).toHaveBeenCalled());
+    expect(screen.queryByText('חפשו מוצר מהשורה העליונה')).not.toBeInTheDocument();
+    expect(screen.queryByText('Smart search')).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText('למשל: חלב, ביצים, קוטג׳')).not.toBeInTheDocument();
   });
 

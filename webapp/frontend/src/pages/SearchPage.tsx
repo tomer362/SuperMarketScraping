@@ -86,19 +86,6 @@ export default function SearchPage() {
   return (
     <div className="mx-auto max-w-5xl">
       <section className="space-y-4">
-        {!query && (
-          <div className="rounded-[24px] border border-white/80 bg-white/95 p-5 shadow-[0_20px_60px_-36px_rgba(15,23,42,0.35)] sm:p-6">
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-600">Smart search</p>
-            <h2 className="mt-2 text-2xl font-black text-slate-900">חפשו מוצר מהשורה העליונה</h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
-              החיפוש נשאר זמין למעלה בכל עמוד, כדי שתוכלו להתחיל השוואה חדשה בלי לחזור למסך הבית.
-            </p>
-            <p className="mt-3 text-sm font-semibold text-slate-500">
-              סינון רשתות פעיל מתוך הגדרות: {selectedChains.length.toLocaleString('he-IL')}
-            </p>
-          </div>
-        )}
-
         {query.trim().length > 0 && query.trim().length < 3 && (
           <p className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-medium text-amber-700">
             צריך לפחות 3 תווים לפני שנשלח חיפוש לשרת.

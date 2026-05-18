@@ -273,6 +273,11 @@ class RefreshProgressOut(BaseModel):
     total_chains: int = 0
     progress_percent: int = 0
     current_status_label: str
+    current_chain: str | None = None
+    chains_started: list[str] = []
+    chains_running: list[str] = []
+    chains_fetched: list[str] = []
+    products_fetched: int = 0
     chains_scraped: list[str] = []
     chains_failed: list[str] = []
     products_upserted: int = 0

@@ -61,6 +61,7 @@ class Settings:
     reset_test_db_on_start: bool
     log_level: str
     catalog_debug: bool
+    catalog_refresh_stale_after_minutes: int
 
 
 @lru_cache(maxsize=1)
@@ -109,6 +110,9 @@ def get_settings() -> Settings:
         reset_test_db_on_start=_get_bool("RESET_TEST_DB_ON_START", False),
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         catalog_debug=_get_bool("CATALOG_DEBUG", False),
+        catalog_refresh_stale_after_minutes=int(
+            os.environ.get("CATALOG_REFRESH_STALE_AFTER_MINUTES", "30")
+        ),
     )
 
 

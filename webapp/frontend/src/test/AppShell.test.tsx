@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -6,16 +6,24 @@ import * as api from '../api';
 import AppShell from '../components/AppShell';
 import { renderWithQueryClient } from './render';
 
+const authMock = vi.hoisted(() => ({
+  user: {
+    id: 1,
+    username: 'demo_user',
+    created_at: '2026-05-18T00:00:00Z',
+    location_prompt_dismissed: true,
+    location_lat: null,
+    location_lng: null,
+  },
+  logout: vi.fn(),
+  refresh: vi.fn(),
+}));
+
 vi.mock('../app/AuthProvider', () => ({
   useAuth: () => ({
-    user: {
-      id: 1,
-      username: 'demo_user',
-      created_at: '2026-05-18T00:00:00Z',
-      location_prompt_dismissed: true,
-    },
-    logout: vi.fn(),
-    refresh: vi.fn(),
+    user: authMock.user,
+    logout: authMock.logout,
+    refresh: authMock.refresh,
   }),
 }));
 
@@ -76,6 +84,16 @@ function renderShell(initialPath = '/') {
 describe('AppShell', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    authMock.user = {
+      id: 1,
+      username: 'demo_user',
+      created_at: '2026-05-18T00:00:00Z',
+      location_prompt_dismissed: true,
+      location_lat: null,
+      location_lng: null,
+    };
+    authMock.logout.mockClear();
+    authMock.refresh.mockClear();
   });
 
   it('submits global search from any authenticated page', async () => {
@@ -137,5 +155,130 @@ describe('AppShell', () => {
     expect(screen.getByRole('dialog', { name: 'התקדמות סריקה' })).toBeInTheDocument();
     expect(screen.getByText('30%')).toBeInTheDocument();
     expect(screen.getByText('123')).toBeInTheDocument();
+  });
+
+  it('asks for confirmation before starting a new catalog refresh', async () => {
+    vi.spyOn(api, 'getCatalogStatus').mockResolvedValue(status);
+    vi.spyOn(api, 'getChains').mockResolvedValue(chains);
+    const refreshSpy = vi.spyOn(api, 'triggerCatalogRefresh').mockResolvedValue({
+      accepted: true,
+      status: 'started',
+      detail: 'Catalog prices refresh started.',
+    });
+
+    renderShell('/');
+
+    await userEvent.click(await screen.findByRole('button', { name: 'רענן קטלוג' }));
+
+    expect(screen.getByRole('dialog', { name: 'לרענן את הקטלוג עכשיו?' })).toBeInTheDocument();
+    expect(refreshSpy).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole('button', { name: 'כן, רענן' }));
+
+    await waitFor(() => expect(refreshSpy).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('dialog', { name: 'לרענן את הקטלוג עכשיו?' })).not.toBeInTheDocument();
+  });
+
+  it('cancels catalog refresh confirmation without starting refresh', async () => {
+    vi.spyOn(api, 'getCatalogStatus').mockResolvedValue(status);
+    vi.spyOn(api, 'getChains').mockResolvedValue(chains);
+    const refreshSpy = vi.spyOn(api, 'triggerCatalogRefresh').mockResolvedValue({
+      accepted: true,
+      status: 'started',
+      detail: 'Catalog prices refresh started.',
+    });
+
+    renderShell('/');
+
+    await userEvent.click(await screen.findByRole('button', { name: 'רענן קטלוג' }));
+    await userEvent.click(screen.getByRole('button', { name: 'ביטול' }));
+
+    expect(refreshSpy).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog', { name: 'לרענן את הקטלוג עכשיו?' })).not.toBeInTheDocument();
+  });
+
+  it('shows a starting state if progress details lag behind refresh status', async () => {
+    vi.spyOn(api, 'getCatalogStatus').mockResolvedValue({
+      ...status,
+      refresh_in_progress: true,
+      active_refresh: null,
+    });
+    vi.spyOn(api, 'getChains').mockResolvedValue(chains);
+
+    renderShell('/');
+
+    await userEvent.click(await screen.findByRole('button', { name: 'הצג התקדמות' }));
+
+    expect(screen.getByRole('dialog', { name: 'התקדמות סריקה' })).toBeInTheDocument();
+    expect(screen.getByText('מתחיל רענון קטלוג...')).toBeInTheDocument();
+    expect(screen.queryByText('אין רענון פעיל')).not.toBeInTheDocument();
+  });
+
+  it('closes the progress popup with Escape', async () => {
+    vi.spyOn(api, 'getCatalogStatus').mockResolvedValue({
+      ...status,
+      refresh_in_progress: true,
+      active_refresh: null,
+    });
+    vi.spyOn(api, 'getChains').mockResolvedValue(chains);
+
+    renderShell('/');
+
+    await userEvent.click(await screen.findByRole('button', { name: 'הצג התקדמות' }));
+    expect(screen.getByRole('dialog', { name: 'התקדמות סריקה' })).toBeInTheDocument();
+
+    await userEvent.keyboard('{Escape}');
+
+    expect(screen.queryByRole('dialog', { name: 'התקדמות סריקה' })).not.toBeInTheDocument();
+  });
+
+  it('hides the location prompt immediately after using current location', async () => {
+    authMock.user = {
+      ...authMock.user,
+      location_prompt_dismissed: false,
+      location_lat: null,
+      location_lng: null,
+    };
+    vi.spyOn(api, 'getCatalogStatus').mockResolvedValue(status);
+    vi.spyOn(api, 'getChains').mockResolvedValue(chains);
+    vi.spyOn(api, 'saveCurrentLocation').mockResolvedValue({
+      user: {
+        ...authMock.user,
+        location_lat: 32.0853,
+        location_lng: 34.7818,
+        location_label: 'המיקום הנוכחי',
+        location_source: 'gps',
+        location_updated_at: '2026-05-18T00:00:00Z',
+        location_prompt_dismissed: true,
+      },
+    });
+    Object.defineProperty(navigator, 'geolocation', {
+      configurable: true,
+      value: {
+        getCurrentPosition: vi.fn((success: PositionCallback) =>
+          success({
+            coords: {
+              latitude: 32.0853,
+              longitude: 34.7818,
+              accuracy: 1,
+              altitude: null,
+              altitudeAccuracy: null,
+              heading: null,
+              speed: null,
+            },
+            timestamp: Date.now(),
+          } as GeolocationPosition),
+        ),
+      },
+    });
+
+    renderShell('/');
+
+    expect(await screen.findByText('להציג סופרים קרובים יותר?')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'השתמש במיקום' }));
+
+    await waitFor(() =>
+      expect(screen.queryByText('להציג סופרים קרובים יותר?')).not.toBeInTheDocument(),
+    );
   });
 });

@@ -226,6 +226,11 @@ export interface RefreshProgress {
   total_chains: number;
   progress_percent: number;
   current_status_label: string;
+  current_chain?: string | null;
+  chains_started?: string[];
+  chains_running?: string[];
+  chains_fetched?: string[];
+  products_fetched?: number;
   chains_scraped: string[];
   chains_failed: string[];
   products_upserted: number;

@@ -451,6 +451,52 @@ async def merge_deal_staging_into_active(session: AsyncSession) -> int:
     return updated
 
 
+async def replace_active_deals_from_staging(
+    session: AsyncSession,
+    *,
+    chains: Sequence[str],
+) -> int:
+    effective_chains = tuple(chain for chain in chains if chain)
+    if not effective_chains:
+        return 0
+
+    await session.execute(
+        update(CatalogOffer)
+        .where(CatalogOffer.is_active.is_(True))
+        .where(CatalogOffer.chain.in_(effective_chains))
+        .values(
+            sale_price=None,
+            discount_percent=None,
+            deal=None,
+            updated_at=_now_utc(),
+        )
+    )
+
+    staged_rows = list(
+        (
+            await session.execute(
+                select(CatalogOfferStaging).where(CatalogOfferStaging.chain.in_(effective_chains))
+            )
+        ).scalars()
+    )
+
+    updated = 0
+    now = _now_utc()
+    for row in staged_rows:
+        values = {column: getattr(row, column) for column in _DEAL_MERGE_COLUMNS}
+        values["updated_at"] = now
+        result = await session.execute(
+            update(CatalogOffer)
+            .where(CatalogOffer.is_active.is_(True))
+            .where(CatalogOffer.chain == row.chain)
+            .where(CatalogOffer.store_id == row.store_id)
+            .where(CatalogOffer.product_id == row.product_id)
+            .values(**values)
+        )
+        updated += int(result.rowcount or 0)
+    return updated
+
+
 async def deactivate_missing_offers_for_chain(
     session: AsyncSession,
     chain: str,

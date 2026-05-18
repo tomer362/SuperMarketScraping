@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -66,13 +67,14 @@ from schemas import (
     UserOut,
 )
 from location_service import geocode_address, now_utc, validate_coordinates
-from scraper_runner import run_deals_refresh, run_full_refresh
+from scraper_runner import get_active_refresh_progress, run_deals_refresh, run_full_refresh
 from scheduler import RefreshScheduler
 from seed import seed_demo_catalog
 from settings import get_settings
 
 
 settings = get_settings()
+PROCESS_STARTED_AT = now_utc()
 
 logging.basicConfig(
     level=logging.DEBUG if settings.catalog_debug else getattr(logging, settings.log_level, logging.INFO),
@@ -133,15 +135,55 @@ def _build_refresh_progress(run: dict | None, *, refresh_in_progress: bool) -> R
     total_chains = len(iter_active_chains())
     chains_scraped = list(run.get("chains_scraped") or [])
     chains_failed = list(run.get("chains_failed") or [])
+    live_progress = get_active_refresh_progress(int(run.get("run_id") or 0))
+    chains_started = list((live_progress or {}).get("chains_started") or [])
+    chains_running = list((live_progress or {}).get("chains_running") or [])
+    chains_fetched = list((live_progress or {}).get("chains_fetched") or [])
+    current_chain = (live_progress or {}).get("current_chain")
+    status_hint = (live_progress or {}).get("current_status_hint")
+    products_fetched = int((live_progress or {}).get("products_fetched") or 0)
+    products_reported = int((live_progress or {}).get("products_reported") or 0)
+    products_fetched = max(products_fetched, products_reported)
+    products_upserted = max(
+        int(run.get("products_upserted") or 0),
+        int((live_progress or {}).get("products_upserted") or 0),
+    )
+    chain_labels = {chain.key: chain.label for chain in iter_active_chains()}
     completed_chains = min(total_chains, len(set(chains_scraped + chains_failed)))
+    started_chains = min(total_chains, len(set(chains_started)))
+    fetched_chains = min(total_chains, len(set(chains_fetched)))
     progress_percent = 0
     if total_chains > 0:
-        progress_percent = round((completed_chains / total_chains) * 100)
+        weighted_progress = max(completed_chains, fetched_chains * 0.7, started_chains * 0.25)
+        progress_percent = round((weighted_progress / total_chains) * 100)
     if run.get("status") in {"done", "failed"}:
         progress_percent = 100
     progress_percent = max(0, min(100, progress_percent))
+    started_at_raw = run.get("started_at")
+    elapsed_seconds = 0
+    if started_at_raw:
+        try:
+            started_at = started_at_raw if hasattr(started_at_raw, "tzinfo") else None
+            if started_at and started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=now_utc().tzinfo)
+            if started_at:
+                elapsed_seconds = int((now_utc() - started_at).total_seconds())
+        except Exception:
+            elapsed_seconds = 0
 
-    if completed_chains == 0:
+    if isinstance(status_hint, str) and status_hint.startswith("persisting:"):
+        _, chain_key, product_count = (status_hint.split(":", 2) + ["", ""])[:3]
+        chain_label = chain_labels.get(chain_key, chain_key)
+        status_label = f"שומר {product_count} מוצרים מ-{chain_label}"
+    elif len(chains_running) > 1:
+        status_label = f"סורק {len(chains_running)} רשתות במקביל"
+    elif current_chain:
+        status_label = f"סורק עכשיו: {chain_labels.get(str(current_chain), str(current_chain))}"
+    elif started_chains > completed_chains:
+        status_label = f"ממתין לתוצאות מ-{started_chains} רשתות"
+    elif elapsed_seconds >= 60 and products_fetched <= 0 and len(chains_running) > 0:
+        status_label = f"סריקה כבדה ({elapsed_seconds} שניות) - עדיין אוספים נתונים"
+    elif completed_chains == 0:
         status_label = "מתחיל רענון קטלוג..."
     elif progress_percent >= 100:
         status_label = "מסיים רענון קטלוג..."
@@ -158,11 +200,43 @@ def _build_refresh_progress(run: dict | None, *, refresh_in_progress: bool) -> R
         total_chains=total_chains,
         progress_percent=progress_percent,
         current_status_label=status_label,
+        current_chain=str(current_chain) if current_chain else None,
+        chains_started=chains_started,
+        chains_running=chains_running,
+        chains_fetched=chains_fetched,
         chains_scraped=chains_scraped,
         chains_failed=chains_failed,
-        products_upserted=int(run.get("products_upserted") or 0),
+        products_fetched=products_fetched,
+        products_upserted=products_upserted,
         errors=list(run.get("errors") or []),
     )
+
+
+def _is_stale_running_refresh(run: CatalogRefreshRun) -> bool:
+    started_at = run.started_at
+    if started_at is None:
+        return False
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=now_utc().tzinfo)
+    stale_after = timedelta(minutes=settings.catalog_refresh_stale_after_minutes)
+    return started_at < PROCESS_STARTED_AT or now_utc() - started_at > stale_after
+
+
+async def _fail_stale_running_refresh(session: AsyncSession, run: CatalogRefreshRun | None) -> CatalogRefreshRun | None:
+    if not run or scheduler.refresh_in_progress or not _is_stale_running_refresh(run):
+        return run
+    errors = list(run.errors or [])
+    errors.append(
+        "stale_refresh: marked failed because no active refresh task owns this run "
+        "in the current backend process or the run exceeded "
+        f"{settings.catalog_refresh_stale_after_minutes} minutes"
+    )
+    run.status = "failed"
+    run.finished_at = now_utc()
+    run.errors = errors
+    await session.commit()
+    logger.warning("Marked stale catalog refresh run %s as failed", run.id)
+    return None
 
 
 scheduler = RefreshScheduler(
@@ -654,6 +728,7 @@ async def catalog_status(session: AsyncSession = Depends(get_session)) -> Catalo
             .limit(1)
         )
     ).scalar_one_or_none()
+    running_refresh = await _fail_stale_running_refresh(session, running_refresh)
     last_refresh = await latest_refresh_run(session)
     last_successful_refresh = await latest_refresh_run(session, successful_only=True)
     last_price_refresh = await latest_refresh_run(session, refresh_kind="prices")
@@ -718,6 +793,12 @@ async def trigger_catalog_prices_refresh() -> RefreshTriggerOut:
 @app.post("/api/catalog/refresh/deals", response_model=RefreshTriggerOut, tags=["Catalog"])
 async def trigger_catalog_deals_refresh() -> RefreshTriggerOut:
     result = await scheduler.trigger_now("deals", "manual")
+    return RefreshTriggerOut(**result)
+
+
+@app.post("/api/catalog/refresh/cancel", response_model=RefreshTriggerOut, tags=["Catalog"])
+async def cancel_catalog_refresh() -> RefreshTriggerOut:
+    result = await scheduler.cancel_current()
     return RefreshTriggerOut(**result)
 
 

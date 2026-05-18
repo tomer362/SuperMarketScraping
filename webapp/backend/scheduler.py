@@ -120,6 +120,11 @@ class RefreshScheduler:
                 "detail": "A catalog refresh is already in progress.",
             }
         logger.info("Triggering %s catalog refresh: %s", refresh_kind, source)
+        self._active_run = {
+            "source": source,
+            "refresh_kind": refresh_kind,
+            "status": "running",
+        }
         self._refresh_task = asyncio.create_task(
             self._run_refresh(source, refresh_kind),
             name=f"catalog_refresh_{refresh_kind}_{source}",
@@ -128,6 +133,28 @@ class RefreshScheduler:
             "accepted": True,
             "status": "started",
             "detail": f"Catalog {refresh_kind} refresh started.",
+        }
+
+    async def cancel_current(self) -> dict:
+        if not self.refresh_in_progress or self._refresh_task is None:
+            return {
+                "accepted": False,
+                "status": "idle",
+                "detail": "No catalog refresh is currently running.",
+            }
+        if self._refresh_task.done():
+            return {
+                "accepted": False,
+                "status": "idle",
+                "detail": "No catalog refresh is currently running.",
+            }
+        self._refresh_task.cancel()
+        if self._active_run is not None:
+            self._active_run["status"] = "cancelling"
+        return {
+            "accepted": True,
+            "status": "cancelling",
+            "detail": "Catalog refresh cancellation requested.",
         }
 
     async def _loop(self, schedule: RefreshSchedule) -> None:

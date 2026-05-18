@@ -253,3 +253,8 @@ export async function triggerCatalogDealsRefresh(): Promise<RefreshTriggerResult
   const response = await api.post<RefreshTriggerResult>('/catalog/refresh/deals');
   return response.data;
 }
+
+export async function cancelCatalogRefresh(): Promise<RefreshTriggerResult> {
+  const response = await api.post<RefreshTriggerResult>('/catalog/refresh/cancel');
+  return response.data;
+}

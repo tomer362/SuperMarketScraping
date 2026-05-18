@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  cancelCatalogRefresh,
   dismissLocationPrompt,
   getCatalogStatus,
   getChains,
@@ -24,9 +26,11 @@ export default function AppShell() {
   const location = useLocation();
   const queryClient = useQueryClient();
   const [progressOpen, setProgressOpen] = useState(false);
+  const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [autocompleteHiddenForQuery, setAutocompleteHiddenForQuery] = useState<string | null>(null);
   const [selectedChains, setSelectedChains] = useState<string[]>([]);
+  const [locationPromptHidden, setLocationPromptHidden] = useState(false);
 
   const statusQuery = useQuery({
     queryKey: ['catalog-status'],
@@ -68,10 +72,23 @@ export default function AppShell() {
       await queryClient.invalidateQueries({ queryKey: ['catalog-status'] });
     },
   });
+  const cancelRefreshMutation = useMutation({
+    mutationFn: cancelCatalogRefresh,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['catalog-status'] });
+    },
+  });
 
-  const showLocationPrompt = Boolean(user && !user.location_lat && !user.location_prompt_dismissed);
+  useEffect(() => {
+    setLocationPromptHidden(false);
+  }, [user?.id]);
+
+  const showLocationPrompt = Boolean(
+    user && !user.location_lat && !user.location_prompt_dismissed && !locationPromptHidden,
+  );
   const locationPromptMutation = useMutation({
     mutationFn: dismissLocationPrompt,
+    onMutate: () => setLocationPromptHidden(true),
     onSuccess: async () => refresh(),
   });
   const gpsMutation = useMutation({
@@ -93,8 +110,14 @@ export default function AppShell() {
           { enableHighAccuracy: true, timeout: 10000 },
         );
       }),
-    onSuccess: async () => refresh(),
-    onError: async () => locationPromptMutation.mutate(true),
+    onSuccess: async () => {
+      setLocationPromptHidden(true);
+      await refresh();
+    },
+    onError: async () => {
+      setLocationPromptHidden(true);
+      locationPromptMutation.mutate(true);
+    },
   });
 
   const parsedSearch = parseSearchQuantity(searchText);
@@ -183,7 +206,7 @@ export default function AppShell() {
                   if (refreshInProgress) {
                     setProgressOpen(true);
                   } else {
-                    refreshMutation.mutate();
+                    setRefreshConfirmOpen(true);
                   }
                 }}
                 className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-2 text-xs font-bold text-sky-700 transition hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60 sm:px-3"
@@ -276,8 +299,21 @@ export default function AppShell() {
         <RefreshProgressDialog
           status={statusQuery.data}
           isStarting={refreshMutation.isPending}
+          isCancelling={cancelRefreshMutation.isPending}
+          onCancelRefresh={() => cancelRefreshMutation.mutate()}
           error={refreshMutation.error}
           onClose={() => setProgressOpen(false)}
+        />
+      )}
+
+      {refreshConfirmOpen && !refreshInProgress && (
+        <ConfirmRefreshDialog
+          isPending={refreshMutation.isPending}
+          onCancel={() => setRefreshConfirmOpen(false)}
+          onConfirm={() => {
+            setRefreshConfirmOpen(false);
+            refreshMutation.mutate();
+          }}
         />
       )}
     </div>
@@ -302,23 +338,133 @@ function TopNavItem({ to, label }: { to: string; label: string }) {
   );
 }
 
+function ConfirmRefreshDialog({
+  isPending,
+  onCancel,
+  onConfirm,
+}: {
+  isPending: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
+  const closeOnEscape = useCallback(
+    (event: KeyboardEvent | ReactKeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      onCancel();
+    },
+    [onCancel],
+  );
+
+  useEffect(() => {
+    cancelButtonRef.current?.focus();
+
+    document.addEventListener('keydown', closeOnEscape, { capture: true });
+    return () => document.removeEventListener('keydown', closeOnEscape, { capture: true });
+  }, [closeOnEscape]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 px-4 py-8 backdrop-blur-sm"
+      onKeyDownCapture={closeOnEscape}
+    >
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="refresh-confirm-title"
+        className="w-full max-w-md rounded-[24px] border border-white/80 bg-white p-5 text-slate-900 shadow-2xl sm:p-6"
+      >
+        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-600">Catalog refresh</p>
+        <h2 id="refresh-confirm-title" className="mt-2 text-xl font-black">
+          לרענן את הקטלוג עכשיו?
+        </h2>
+        <p className="mt-3 text-sm font-medium leading-6 text-slate-600">
+          הרענון עשוי לקחת כמה דקות ולהפעיל סריקה מול כל הרשתות. ההתקדמות תופיע במסך הסטטוס.
+        </p>
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
+          <button
+            ref={cancelButtonRef}
+            type="button"
+            onClick={onCancel}
+            disabled={isPending}
+            className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-600 transition hover:bg-slate-50 disabled:opacity-60"
+          >
+            ביטול
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={isPending}
+            className="rounded-full bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-slate-800 disabled:opacity-60"
+          >
+            {isPending ? 'מתחיל...' : 'כן, רענן'}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function RefreshProgressDialog({
   status,
   isStarting,
+  isCancelling,
+  onCancelRefresh,
   error,
   onClose,
 }: {
   status?: CatalogStatus;
   isStarting: boolean;
+  isCancelling: boolean;
+  onCancelRefresh: () => void;
   error: unknown;
   onClose: () => void;
 }) {
   const progress = status?.active_refresh;
   const percent = isStarting ? 0 : progress?.progress_percent ?? (status?.refresh_in_progress ? 0 : 100);
   const running = isStarting || status?.refresh_in_progress;
+  const statusLabel = progress?.current_status_label ?? (running ? 'מתחיל רענון קטלוג...' : 'אין רענון פעיל');
+  const chainLabels = useMemo(
+    () => new Map((status?.chains ?? []).map((chain) => [chain.chain, chain.label])),
+    [status?.chains],
+  );
+  const runningChains = progress?.chains_running ?? [];
+  const startedChains = progress?.chains_started ?? [];
+  const fetchedChains = progress?.chains_fetched ?? [];
+  const waitingChains = startedChains.filter(
+    (chain) => !runningChains.includes(chain) && !progress?.chains_scraped.includes(chain) && !progress?.chains_failed.includes(chain),
+  );
+  const productsFetched = progress?.products_fetched ?? progress?.products_upserted ?? 0;
+  const productsPersisted = progress?.products_upserted ?? 0;
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const closeOnEscape = useCallback(
+    (event: KeyboardEvent | ReactKeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    },
+    [onClose],
+  );
+
+  useEffect(() => {
+    closeButtonRef.current?.focus();
+
+    document.addEventListener('keydown', closeOnEscape, { capture: true });
+    return () => document.removeEventListener('keydown', closeOnEscape, { capture: true });
+  }, [closeOnEscape]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 px-4 py-8 backdrop-blur-sm">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 px-4 py-8 backdrop-blur-sm"
+      onKeyDownCapture={closeOnEscape}
+    >
       <section
         role="dialog"
         aria-modal="true"
@@ -333,6 +479,7 @@ function RefreshProgressDialog({
             </h2>
           </div>
           <button
+            ref={closeButtonRef}
             type="button"
             onClick={onClose}
             className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm font-bold text-slate-600 transition hover:bg-slate-50"
@@ -340,10 +487,22 @@ function RefreshProgressDialog({
             סגור
           </button>
         </div>
+        {running && (
+          <div className="mt-3 flex justify-end">
+            <button
+              type="button"
+              onClick={onCancelRefresh}
+              disabled={isCancelling}
+              className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700 transition hover:bg-rose-100 disabled:opacity-60"
+            >
+              {isCancelling ? 'מבטל...' : 'בטל רענון'}
+            </button>
+          </div>
+        )}
 
         <div className="mt-5">
           <div className="mb-2 flex items-center justify-between gap-3 text-sm font-bold text-slate-700">
-            <span>{progress?.current_status_label ?? (isStarting ? 'מתחיל רענון קטלוג...' : 'אין רענון פעיל')}</span>
+            <span>{statusLabel}</span>
             <span>{percent}%</span>
           </div>
           <div className="h-3 overflow-hidden rounded-full bg-slate-100">
@@ -354,19 +513,33 @@ function RefreshProgressDialog({
           </div>
         </div>
 
-        <div className="mt-5 grid gap-3 sm:grid-cols-3">
+        <div className="mt-5 grid gap-3 sm:grid-cols-4">
           <ProgressMetric
             label="רשתות"
-            value={`${progress?.completed_chains ?? 0}/${progress?.total_chains ?? status?.chains.length ?? 0}`}
+            value={`${fetchedChains.length || progress?.completed_chains || 0}/${progress?.total_chains ?? status?.chains.length ?? 0}`}
           />
-          <ProgressMetric label="מוצרים" value={String(progress?.products_upserted ?? 0)} />
+          <ProgressMetric
+            label="התחילו"
+            value={`${startedChains.length}/${progress?.total_chains ?? status?.chains.length ?? 0}`}
+          />
+          <ProgressMetric
+            label="מוצרים"
+            value={productsFetched === productsPersisted ? String(productsFetched) : `${productsFetched} (${productsPersisted})`}
+          />
           <ProgressMetric label="מצב" value={running ? 'רץ' : progress?.status === 'failed' ? 'נכשל' : 'הושלם'} />
         </div>
 
         {progress && (progress.chains_scraped.length > 0 || progress.chains_failed.length > 0) && (
           <div className="mt-5 grid gap-3 text-sm sm:grid-cols-2">
-            <ProgressList title="הושלמו" items={progress.chains_scraped} tone="success" />
-            <ProgressList title="נכשלו" items={progress.chains_failed} tone="danger" />
+            <ProgressList title="הושלמו" items={progress.chains_scraped} tone="success" labels={chainLabels} />
+            <ProgressList title="נכשלו" items={progress.chains_failed} tone="danger" labels={chainLabels} />
+          </div>
+        )}
+
+        {progress && (runningChains.length > 0 || waitingChains.length > 0) && (
+          <div className="mt-5 grid gap-3 text-sm sm:grid-cols-2">
+            <ProgressList title="נסרקות עכשיו" items={runningChains} tone="active" labels={chainLabels} />
+            <ProgressList title="התחילו" items={waitingChains} tone="neutral" labels={chainLabels} />
           </div>
         )}
 
@@ -393,17 +566,26 @@ function ProgressList({
   title,
   items,
   tone,
+  labels,
 }: {
   title: string;
   items: string[];
-  tone: 'success' | 'danger';
+  tone: 'success' | 'danger' | 'active' | 'neutral';
+  labels?: Map<string, string>;
 }) {
+  const colorClass =
+    tone === 'success'
+      ? 'text-emerald-700'
+      : tone === 'danger'
+        ? 'text-rose-700'
+        : tone === 'active'
+          ? 'text-sky-700'
+          : 'text-slate-700';
+  const displayItems = items.map((item) => labels?.get(item) ?? item);
   return (
     <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-      <p className={classNames('text-sm font-black', tone === 'success' ? 'text-emerald-700' : 'text-rose-700')}>
-        {title}
-      </p>
-      <p className="mt-2 text-slate-600">{items.length > 0 ? items.join(', ') : 'אין'}</p>
+      <p className={classNames('text-sm font-black', colorClass)}>{title}</p>
+      <p className="mt-2 text-slate-600">{displayItems.length > 0 ? displayItems.join(', ') : 'אין'}</p>
     </div>
   );
 }

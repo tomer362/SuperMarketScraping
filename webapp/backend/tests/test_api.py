@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -464,9 +465,13 @@ async def test_catalog_status(authenticated_client):
 
 
 @pytest.mark.asyncio
-async def test_catalog_status_includes_active_refresh_progress(authenticated_client):
+async def test_catalog_status_includes_active_refresh_progress(authenticated_client, monkeypatch):
     from db import async_session_factory
+    from location_service import now_utc
     from models import CatalogRefreshRun
+    import main
+
+    monkeypatch.setattr(main, "PROCESS_STARTED_AT", now_utc() - timedelta(minutes=1))
 
     async with async_session_factory() as session:
         run = CatalogRefreshRun(
@@ -491,6 +496,81 @@ async def test_catalog_status_includes_active_refresh_progress(authenticated_cli
     assert progress['products_upserted'] == 123
     assert progress['chains_scraped'] == ["carrefour", "ramilevi"]
     assert progress['chains_failed'] == ["quik"]
+
+
+@pytest.mark.asyncio
+async def test_catalog_status_includes_live_started_chains(authenticated_client, monkeypatch):
+    from db import async_session_factory
+    from location_service import now_utc
+    from models import CatalogRefreshRun
+    import main
+
+    monkeypatch.setattr(main, "PROCESS_STARTED_AT", now_utc() - timedelta(minutes=1))
+    monkeypatch.setattr(
+        main,
+        "get_active_refresh_progress",
+        lambda run_id: {
+            "chains_started": ["carrefour", "ramilevi", "quik"],
+            "chains_running": ["carrefour", "quik"],
+            "current_chain": "quik",
+        },
+    )
+
+    async with async_session_factory() as session:
+        run = CatalogRefreshRun(
+            source="manual",
+            refresh_kind="prices",
+            status="running",
+            chains_scraped=[],
+            chains_failed=[],
+            products_upserted=0,
+            errors=[],
+        )
+        session.add(run)
+        await session.commit()
+
+    response = await authenticated_client.get('/api/catalog/status')
+    assert response.status_code == 200
+    progress = response.json()['active_refresh']
+    assert progress['progress_percent'] > 0
+    assert progress['current_chain'] == "quik"
+    assert progress['chains_started'] == ["carrefour", "ramilevi", "quik"]
+    assert progress['chains_running'] == ["carrefour", "quik"]
+    assert progress['current_status_label'] == "סורק 2 רשתות במקביל"
+
+
+@pytest.mark.asyncio
+async def test_catalog_status_marks_stale_running_refresh_failed(authenticated_client):
+    from db import async_session_factory
+    from location_service import now_utc
+    from models import CatalogRefreshRun
+
+    async with async_session_factory() as session:
+        run = CatalogRefreshRun(
+            source="manual",
+            refresh_kind="prices",
+            status="running",
+            started_at=now_utc() - timedelta(minutes=45),
+            chains_scraped=[],
+            chains_failed=[],
+            products_upserted=0,
+            errors=[],
+        )
+        session.add(run)
+        await session.commit()
+        run_id = run.id
+
+    response = await authenticated_client.get('/api/catalog/status')
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['refresh_in_progress'] is False
+    assert payload['active_refresh'] is None
+
+    async with async_session_factory() as session:
+        refreshed = await session.get(CatalogRefreshRun, run_id)
+        assert refreshed.status == "failed"
+        assert refreshed.finished_at is not None
+        assert any(error.startswith("stale_refresh:") for error in refreshed.errors)
 
 
 @pytest.mark.asyncio
@@ -525,6 +605,13 @@ async def test_catalog_refresh_trigger_returns_while_refresh_runs(authenticated_
         "status": "started",
         "detail": "Catalog prices refresh started.",
     }
+    immediate_status = await authenticated_client.get('/api/catalog/status')
+    assert immediate_status.status_code == 200
+    immediate_payload = immediate_status.json()
+    assert immediate_payload["refresh_in_progress"] is True
+    assert immediate_payload["active_refresh"] is not None
+    assert immediate_payload["active_refresh"]["refresh_kind"] == "prices"
+    assert immediate_payload["active_refresh"]["current_status_label"]
     await asyncio.wait_for(started.wait(), timeout=1)
 
     duplicate = await authenticated_client.post('/api/catalog/refresh')
@@ -533,6 +620,47 @@ async def test_catalog_refresh_trigger_returns_while_refresh_runs(authenticated_
 
     release.set()
     await asyncio.wait_for(scheduler._refresh_task, timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_catalog_refresh_cancel_endpoint(authenticated_client, monkeypatch):
+    from main import scheduler
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_refresh(source: str, refresh_kind: str) -> dict:
+        started.set()
+        await release.wait()
+        return {
+            "run_id": 991,
+            "source": source,
+            "refresh_kind": refresh_kind,
+            "status": "done",
+            "started_at": None,
+            "finished_at": None,
+            "chains_scraped": [],
+            "chains_failed": [],
+            "products_upserted": 0,
+            "errors": [],
+        }
+
+    monkeypatch.setattr(scheduler, "_refresh_callback", fake_refresh)
+
+    response = await authenticated_client.post('/api/catalog/refresh')
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    cancel_response = await authenticated_client.post('/api/catalog/refresh/cancel')
+    assert cancel_response.status_code == 200
+    assert cancel_response.json()["accepted"] is True
+    assert cancel_response.json()["status"] == "cancelling"
+
+    release.set()
+    await asyncio.sleep(0)
+    if scheduler._refresh_task is not None:
+        await asyncio.gather(scheduler._refresh_task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -572,12 +700,8 @@ async def test_catalog_refresh_kind_triggers(authenticated_client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_deals_merge_updates_existing_offers_without_inserting(authenticated_client):
-    from catalog_service import (
-        build_active_generic_groups,
-        merge_deal_staging_into_active,
-        stage_existing_offer_deals,
-    )
+async def test_deals_replace_clears_missing_deals(authenticated_client):
+    from catalog_service import build_active_generic_groups, replace_active_deals_from_staging, upsert_catalog_products
     from db import async_session_factory
     from models import CatalogOffer, CatalogRefreshRun, GenericProductGroup, GenericProductGroupMember
 
@@ -608,6 +732,20 @@ async def test_deals_merge_updates_existing_offers_without_inserting(authenticat
         run = CatalogRefreshRun(source="test", refresh_kind="deals", status="running")
         session.add(run)
         await session.flush()
+        deal_offer = (
+            await session.execute(
+                select(CatalogOffer)
+                .where(CatalogOffer.is_active.is_(True))
+                .where(CatalogOffer.chain == offer.chain)
+                .where(CatalogOffer.store_id == offer.store_id)
+                .where(CatalogOffer.id != offer.id)
+                .limit(1)
+            )
+        ).scalar_one()
+        deal_offer.sale_price = max(0.01, deal_offer.price - 1.0)
+        deal_offer.discount_percent = 10.0
+        deal_offer.deal = {"has_deal": True, "deal_type": "price_reduction"}
+
         products = [
             {
                 "chain": offer.chain,
@@ -624,42 +762,30 @@ async def test_deals_merge_updates_existing_offers_without_inserting(authenticat
                 "deal": {"has_deal": True, "deal_type": "price_reduction", "deal_price": 1.99},
                 "scraped_at": "2026-05-18T00:00:00+00:00",
             },
-            {
-                "chain": "carrefour",
-                "store_id": offer.store_id,
-                "store_name": offer.store_name,
-                "product_id": "new-deal-product",
-                "name": "New product",
-                "price": 0.99,
-                "regular_price": 0.99,
-                "scraped_at": "2026-05-18T00:00:00+00:00",
-            },
         ]
 
-        staged = await stage_existing_offer_deals(session, products, run.id)
-        updated = await merge_deal_staging_into_active(session)
+        staged = await upsert_catalog_products(session, products, run.id, target_table="staging")
+        updated = await replace_active_deals_from_staging(session, chains=[offer.chain])
         await build_active_generic_groups(session)
         await session.commit()
 
         refreshed = await session.get(CatalogOffer, offer.id)
+        cleared = await session.get(CatalogOffer, deal_offer.id)
         after_count = (
             await session.execute(
                 select(func.count()).select_from(CatalogOffer).where(CatalogOffer.is_active.is_(True))
             )
         ).scalar_one()
-        new_product = (
-            await session.execute(
-                select(CatalogOffer).where(CatalogOffer.product_id == "new-deal-product")
-            )
-        ).scalar_one_or_none()
 
         assert staged == 1
         assert updated == 1
         assert after_count == before_count
-        assert new_product is None
         assert refreshed.price == pytest.approx(1.99)
         assert refreshed.sale_price == pytest.approx(1.99)
         assert refreshed.deal["deal_price"] == pytest.approx(1.99)
+        assert cleared.deal is None
+        assert cleared.sale_price is None
+        assert cleared.discount_percent is None
 
         if group_key:
             group = await session.get(GenericProductGroup, group_key)
