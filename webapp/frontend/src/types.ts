@@ -2,6 +2,12 @@ export interface User {
   id: number;
   username: string;
   created_at: string;
+  location_lat?: number | null;
+  location_lng?: number | null;
+  location_label?: string | null;
+  location_source?: string | null;
+  location_updated_at?: string | null;
+  location_prompt_dismissed: boolean;
 }
 
 export interface AuthPayload {
@@ -107,6 +113,7 @@ export interface ChainOffer {
   product_url?: string | null;
   deal?: Deal | null;
   scraped_at: string;
+  distance_km?: number | null;
 }
 
 export interface ProductDetail {
@@ -184,6 +191,7 @@ export interface BasketComparisonChain {
   missing_count: number;
   missing_products: string[];
   applied_deals_count: number;
+  distance_km?: number | null;
   items: BasketComparisonLine[];
 }
 

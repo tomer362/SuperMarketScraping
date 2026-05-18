@@ -34,6 +34,16 @@ export function formatQuantity(value: number | null | undefined): string {
   });
 }
 
+export function formatDistance(value: number | null | undefined): string | null {
+  if (value == null || Number.isNaN(value)) {
+    return null;
+  }
+  if (value < 1) {
+    return `${Math.round(value * 1000).toLocaleString('he-IL')} מ׳ ממך`;
+  }
+  return `${value.toLocaleString('he-IL', { maximumFractionDigits: 1 })} ק״מ ממך`;
+}
+
 export function formatComparisonUnit(input: {
   is_weighable?: boolean | null;
   unit_dimension?: string | null;

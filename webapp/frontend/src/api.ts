@@ -94,6 +94,38 @@ export async function getCurrentUser(): Promise<AuthPayload> {
   return response.data;
 }
 
+export async function saveCurrentLocation(
+  latitude: number,
+  longitude: number,
+  label?: string,
+): Promise<AuthPayload> {
+  const response = await api.patch<AuthPayload>('/account/location', {
+    mode: 'coordinates',
+    latitude,
+    longitude,
+    label,
+  });
+  return response.data;
+}
+
+export async function saveAddressLocation(query: string): Promise<AuthPayload> {
+  const response = await api.patch<AuthPayload>('/account/location', {
+    mode: 'address',
+    query,
+  });
+  return response.data;
+}
+
+export async function clearLocation(): Promise<AuthPayload> {
+  const response = await api.delete<AuthPayload>('/account/location');
+  return response.data;
+}
+
+export async function dismissLocationPrompt(dismissed = true): Promise<AuthPayload> {
+  const response = await api.patch<AuthPayload>('/account/location-prompt', { dismissed });
+  return response.data;
+}
+
 export async function getChains(): Promise<ChainInfo[]> {
   const response = await api.get<ChainInfo[]>('/chains');
   return response.data;

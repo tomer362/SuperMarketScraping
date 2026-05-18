@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getProductDetail } from '../api';
 import ListPickerDialog from '../components/ListPickerDialog';
 import ProductImage from '../components/ProductImage';
-import { formatComparisonUnit, formatCurrency } from '../lib/format';
+import { formatComparisonUnit, formatCurrency, formatDistance } from '../lib/format';
 
 export default function ProductPage() {
   const { productId } = useParams();
@@ -101,7 +101,10 @@ export default function ProductPage() {
                         </span>
                       )}
                     </div>
-                    <p className="mt-1 text-sm text-slate-500">{offer.store_name}</p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {offer.store_name}
+                      {formatDistance(offer.distance_km) ? ` · ${formatDistance(offer.distance_km)}` : ''}
+                    </p>
                     <p className="mt-1 text-sm text-slate-500">{offer.name}</p>
                     {offer.deal?.deal_description && (
                       <p className="mt-2 text-sm font-semibold text-emerald-700">{offer.deal.deal_description}</p>

@@ -67,6 +67,23 @@ async def create_tables(*, drop_existing: bool = False) -> None:
 
         if not drop_existing:
             if database_backend == "sqlite":
+                user_columns = (await conn.execute(text("PRAGMA table_info(app_users)"))).mappings().all()
+                user_column_names = {column["name"] for column in user_columns}
+                user_column_statements = {
+                    "location_lat": "ALTER TABLE app_users ADD COLUMN location_lat FLOAT",
+                    "location_lng": "ALTER TABLE app_users ADD COLUMN location_lng FLOAT",
+                    "location_label": "ALTER TABLE app_users ADD COLUMN location_label VARCHAR(255)",
+                    "location_source": "ALTER TABLE app_users ADD COLUMN location_source VARCHAR(32)",
+                    "location_updated_at": "ALTER TABLE app_users ADD COLUMN location_updated_at DATETIME",
+                    "location_prompt_dismissed": (
+                        "ALTER TABLE app_users ADD COLUMN location_prompt_dismissed BOOLEAN "
+                        "NOT NULL DEFAULT 0"
+                    ),
+                }
+                for column_name, statement in user_column_statements.items():
+                    if column_name not in user_column_names:
+                        await conn.execute(text(statement))
+
                 columns = (await conn.execute(text("PRAGMA table_info(catalog_refresh_runs)"))).mappings().all()
                 column_names = {column["name"] for column in columns}
                 if "refresh_kind" not in column_names:
@@ -77,6 +94,17 @@ async def create_tables(*, drop_existing: bool = False) -> None:
                         )
                     )
             elif database_backend == "postgresql":
+                await conn.execute(text("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS location_lat FLOAT"))
+                await conn.execute(text("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS location_lng FLOAT"))
+                await conn.execute(text("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS location_label VARCHAR(255)"))
+                await conn.execute(text("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS location_source VARCHAR(32)"))
+                await conn.execute(text("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS location_updated_at TIMESTAMP WITH TIME ZONE"))
+                await conn.execute(
+                    text(
+                        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS "
+                        "location_prompt_dismissed BOOLEAN NOT NULL DEFAULT FALSE"
+                    )
+                )
                 await conn.execute(
                     text(
                         "ALTER TABLE catalog_refresh_runs "

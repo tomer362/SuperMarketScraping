@@ -24,8 +24,11 @@ from models import (
     GenericProductGroupStaging,
     ShoppingList,
     ShoppingListItem,
+    StoreBranch,
+    User,
 )
 from generic_groups import classify_generic_offer
+from location_service import haversine_km
 from product_links import build_product_url
 from settings import get_settings
 from text_utils import build_match_key, build_search_text, normalize_barcode, normalize_text
@@ -904,7 +907,7 @@ def serialize_generic_group(group: GenericProductGroup | GenericProductGroupStag
     }
 
 
-def serialize_chain_offer(offer: CatalogOffer) -> dict[str, Any]:
+def serialize_chain_offer(offer: CatalogOffer, distance_km: float | None = None) -> dict[str, Any]:
     return {
         "id": offer.id,
         "chain": offer.chain,
@@ -929,7 +932,46 @@ def serialize_chain_offer(offer: CatalogOffer) -> dict[str, Any]:
         "product_url": build_product_url(offer.chain, offer.product_id, offer.barcode, offer.name),
         "deal": offer.deal,
         "scraped_at": offer.scraped_at,
+        "distance_km": round(distance_km, 1) if distance_km is not None else None,
     }
+
+
+def _user_location(user: User | None) -> tuple[float, float] | None:
+    if user is None or user.location_lat is None or user.location_lng is None:
+        return None
+    return (float(user.location_lat), float(user.location_lng))
+
+
+def _distance_sort_value(distance_km: float | None) -> float:
+    return distance_km if distance_km is not None else inf
+
+
+async def _store_distances(
+    session: AsyncSession,
+    user: User | None,
+    store_keys: Iterable[tuple[str, str]],
+) -> dict[tuple[str, str], float | None]:
+    location = _user_location(user)
+    keys = sorted({(chain, store_id) for chain, store_id in store_keys})
+    if location is None or not keys:
+        return {key: None for key in keys}
+    rows = (
+        await session.execute(
+            select(StoreBranch)
+            .where(tuple_(StoreBranch.chain, StoreBranch.store_id).in_(keys))
+        )
+    ).scalars()
+    branch_by_key = {(branch.chain, branch.store_id): branch for branch in rows}
+    distances: dict[tuple[str, str], float | None] = {}
+    for key in keys:
+        branch = branch_by_key.get(key)
+        distances[key] = haversine_km(
+            location[0],
+            location[1],
+            branch.lat if branch else None,
+            branch.lng if branch else None,
+        )
+    return distances
 
 
 async def search_generic_groups(
@@ -1007,6 +1049,7 @@ async def load_generic_group_detail(
     session: AsyncSession,
     group_key: str,
     chain_filter: Sequence[str] | None = None,
+    user: User | None = None,
 ) -> dict[str, Any] | None:
     group = await session.get(GenericProductGroup, group_key)
     if not group:
@@ -1035,12 +1078,27 @@ async def load_generic_group_detail(
         ).scalars()
     )
 
+    distances = await _store_distances(session, user, ((offer.chain, offer.store_id) for offer in rows))
     best_offer_by_chain: dict[str, CatalogOffer] = {}
     for offer in rows:
-        if offer.chain not in best_offer_by_chain:
+        current = best_offer_by_chain.get(offer.chain)
+        offer_key = (offer.price, _distance_sort_value(distances.get((offer.chain, offer.store_id))), offer.id)
+        current_key = (
+            current.price,
+            _distance_sort_value(distances.get((current.chain, current.store_id))),
+            current.id,
+        ) if current else None
+        if current is None or offer_key < current_key:
             best_offer_by_chain[offer.chain] = offer
 
-    chain_offers = sorted(best_offer_by_chain.values(), key=lambda offer: (offer.price, offer.id))
+    chain_offers = sorted(
+        best_offer_by_chain.values(),
+        key=lambda offer: (
+            offer.price,
+            _distance_sort_value(distances.get((offer.chain, offer.store_id))),
+            offer.id,
+        ),
+    )
     if not chain_offers:
         return None
 
@@ -1048,7 +1106,10 @@ async def load_generic_group_detail(
     detail["chain_count"] = len(chain_offers)
     detail["offer_count"] = len(rows)
     detail["cheapest_price"] = round(float(chain_offers[0].price), 2)
-    detail["offers"] = [serialize_chain_offer(offer) for offer in chain_offers]
+    detail["offers"] = [
+        serialize_chain_offer(offer, distances.get((offer.chain, offer.store_id)))
+        for offer in chain_offers
+    ]
     return detail
 
 
@@ -1189,7 +1250,11 @@ async def search_products(
     return {"query": query, "total": int(count or 0), "products": serialized, "generic_groups": generic_groups}
 
 
-async def load_product_detail(session: AsyncSession, product_id: int) -> dict[str, Any] | None:
+async def load_product_detail(
+    session: AsyncSession,
+    product_id: int,
+    user: User | None = None,
+) -> dict[str, Any] | None:
     product = await session.get(CanonicalProduct, product_id)
     if not product:
         return None
@@ -1227,13 +1292,35 @@ async def load_product_detail(session: AsyncSession, product_id: int) -> dict[st
             sorted({f"{offer.chain}:{offer.store_id}" for offer in offers}),
         )
 
+    distances = await _store_distances(session, user, ((offer.chain, offer.store_id) for offer in offers))
     best_offer_by_chain: dict[str, CatalogOffer] = {}
     for offer in offers:
-        if offer.chain not in best_offer_by_chain:
+        current = best_offer_by_chain.get(offer.chain)
+        offer_key = (
+            offer.price,
+            _distance_sort_value(distances.get((offer.chain, offer.store_id))),
+            offer.id,
+        )
+        current_key = (
+            current.price,
+            _distance_sort_value(distances.get((current.chain, current.store_id))),
+            current.id,
+        ) if current else None
+        if current is None or offer_key < current_key:
             best_offer_by_chain[offer.chain] = offer
 
-    chain_offers = sorted(best_offer_by_chain.values(), key=lambda offer: offer.price)
-    detail_offers = [serialize_chain_offer(offer) for offer in chain_offers]
+    chain_offers = sorted(
+        best_offer_by_chain.values(),
+        key=lambda offer: (
+            offer.price,
+            _distance_sort_value(distances.get((offer.chain, offer.store_id))),
+            offer.id,
+        ),
+    )
+    detail_offers = [
+        serialize_chain_offer(offer, distances.get((offer.chain, offer.store_id)))
+        for offer in chain_offers
+    ]
     cheapest_offer = chain_offers[0]
     return {
         "id": product.id,
@@ -1254,8 +1341,12 @@ async def load_product_detail(session: AsyncSession, product_id: int) -> dict[st
     }
 
 
-async def load_product_chain_offers(session: AsyncSession, product_id: int) -> list[dict[str, Any]]:
-    detail = await load_product_detail(session, product_id)
+async def load_product_chain_offers(
+    session: AsyncSession,
+    product_id: int,
+    user: User | None = None,
+) -> list[dict[str, Any]]:
+    detail = await load_product_detail(session, product_id, user)
     if not detail:
         return []
     return detail["offers"]
@@ -1572,6 +1663,7 @@ def _choose_best_offer_for_quantity(
 async def compare_shopping_list(
     session: AsyncSession,
     shopping_list: ShoppingList,
+    user: User | None = None,
 ) -> dict[str, Any]:
     items = list(
         (
@@ -1727,16 +1819,26 @@ async def compare_shopping_list(
                 sum(len(stores) for stores in stores_by_chain.values()),
             )
 
+    store_distances = await _store_distances(
+        session,
+        user,
+        (
+            (chain_key, store_id)
+            for chain_key, stores in stores_by_chain.items()
+            for store_id in stores
+        ),
+    )
     chain_results: list[dict[str, Any]] = []
     for chain_key in ACTIVE_CHAIN_KEYS:
         stores = stores_by_chain.get(chain_key)
         if not stores:
             continue
         best_store_result: dict[str, Any] | None = None
-        best_store_key = (inf, inf)
+        best_store_key = (inf, inf, inf, "")
         chain_label = get_chain_definition(chain_key).label
 
         for store_id, store_name in stores.items():
+            distance_km = store_distances.get((chain_key, store_id))
             total_price = 0.0
             regular_total_price = 0.0
             missing_products: list[str] = []
@@ -1840,6 +1942,7 @@ async def compare_shopping_list(
                 "missing_count": len(missing_products),
                 "missing_products": missing_products,
                 "applied_deals_count": applied_deals_count,
+                "distance_km": round(distance_km, 1) if distance_km is not None else None,
                 "items": line_items,
             }
             if _catalog_debug_enabled():
@@ -1856,7 +1959,12 @@ async def compare_shopping_list(
                     missing_products,
                     sum(1 for line_item in line_items if line_item["found"]),
                 )
-            ranking_key = (len(missing_products), store_result["total_price"])
+            ranking_key = (
+                len(missing_products),
+                store_result["total_price"],
+                _distance_sort_value(distance_km),
+                store_id,
+            )
             if ranking_key < best_store_key:
                 best_store_result = store_result
                 best_store_key = ranking_key
@@ -1869,6 +1977,8 @@ async def compare_shopping_list(
             0 if result["complete"] else 1,
             result["missing_count"],
             result["total_price"],
+            _distance_sort_value(result["distance_km"]),
+            result["store_id"],
         )
     )
     if _catalog_debug_enabled():

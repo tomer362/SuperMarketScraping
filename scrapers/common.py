@@ -283,6 +283,7 @@ class ScrapeResult(TypedDict):
     stores_scraped: int
     products_total: int
     products_by_store: Dict[str, List[UnifiedProduct]]
+    store_branches: NotRequired[List[Dict[str, Any]]]
     compare_row_details_by_product: NotRequired[Dict[str, Dict[str, Any]]]
     scraped_at: str  # ISO-8601 UTC session start
     duration_seconds: float

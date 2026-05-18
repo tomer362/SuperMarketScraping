@@ -42,6 +42,12 @@ class User(TimestampMixin, Base):
         String(64), nullable=False, unique=True, index=True
     )
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    location_lat: Mapped[float | None] = mapped_column(Float)
+    location_lng: Mapped[float | None] = mapped_column(Float)
+    location_label: Mapped[str | None] = mapped_column(String(255))
+    location_source: Mapped[str | None] = mapped_column(String(32))
+    location_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    location_prompt_dismissed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     sessions: Mapped[list[UserSession]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
@@ -85,6 +91,25 @@ class CatalogRefreshRun(Base):
     chains_failed: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     products_upserted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     errors: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+
+
+class StoreBranch(TimestampMixin, Base):
+    __tablename__ = "store_branches"
+    __table_args__ = (
+        UniqueConstraint("chain", "store_id", name="uq_store_branch_chain_store"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    chain: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    store_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    store_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    city: Mapped[str | None] = mapped_column(String(255))
+    address: Mapped[str | None] = mapped_column(String(255))
+    lat: Mapped[float | None] = mapped_column(Float)
+    lng: Mapped[float | None] = mapped_column(Float)
+    geocode_source: Mapped[str | None] = mapped_column(String(64))
+    geocode_status: Mapped[str | None] = mapped_column(String(32))
+    geocoded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class CanonicalProduct(TimestampMixin, Base):

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatComparisonUnit } from '../lib/format';
+import { formatComparisonUnit, formatDistance } from '../lib/format';
 import { parseSearchQuantity } from '../lib/queryQuantity';
 
 describe('formatComparisonUnit', () => {
@@ -9,6 +9,14 @@ describe('formatComparisonUnit', () => {
     expect(formatComparisonUnit({ is_weighable: false, unit_dimension: 'volume' })).toBe('ל-100 מ״ל');
     expect(formatComparisonUnit({ is_weighable: false, unit_dimension: 'count' })).toBe('ליחידה');
     expect(formatComparisonUnit({ is_weighable: false, unit_dimension: null })).toBeNull();
+  });
+});
+
+describe('formatDistance', () => {
+  it('formats nearby store distances and hides missing values', () => {
+    expect(formatDistance(null)).toBeNull();
+    expect(formatDistance(0.4)).toBe('400 מ׳ ממך');
+    expect(formatDistance(3.4)).toBe('3.4 ק״מ ממך');
   });
 });
 

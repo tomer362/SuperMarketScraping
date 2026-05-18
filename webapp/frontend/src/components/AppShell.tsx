@@ -1,13 +1,13 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { getCatalogStatus, triggerCatalogRefresh } from '../api';
+import { dismissLocationPrompt, getCatalogStatus, saveCurrentLocation, triggerCatalogRefresh } from '../api';
 import { useAuth } from '../app/AuthProvider';
 import { useTheme } from '../app/theme';
 import { formatRelativeDate } from '../lib/format';
 import { classNames } from '../lib/classNames';
 
 export default function AppShell() {
-  const { user, logout } = useAuth();
+  const { user, logout, refresh } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -27,6 +27,33 @@ export default function AppShell() {
     },
   });
   const refreshInProgress = Boolean(statusQuery.data?.refresh_in_progress);
+  const showLocationPrompt = Boolean(user && !user.location_lat && !user.location_prompt_dismissed);
+  const locationPromptMutation = useMutation({
+    mutationFn: dismissLocationPrompt,
+    onSuccess: async () => refresh(),
+  });
+  const gpsMutation = useMutation({
+    mutationFn: () =>
+      new Promise<void>((resolve, reject) => {
+        if (!navigator.geolocation) {
+          reject(new Error('geolocation unavailable'));
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            saveCurrentLocation(
+              position.coords.latitude,
+              position.coords.longitude,
+              'המיקום הנוכחי',
+            ).then(() => resolve()).catch(reject);
+          },
+          reject,
+          { enableHighAccuracy: true, timeout: 10000 },
+        );
+      }),
+    onSuccess: async () => refresh(),
+    onError: async () => locationPromptMutation.mutate(true),
+  });
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_#dbeafe,_#eff6ff_30%,_#f8fafc_60%)] text-slate-900">
@@ -103,6 +130,43 @@ export default function AppShell() {
             </span>
           </div>
         </header>
+
+        {showLocationPrompt && (
+          <section className="mt-4 rounded-[28px] border border-sky-100 bg-white/95 px-4 py-4 shadow-sm sm:px-5">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-black text-slate-900">להציג סופרים קרובים יותר?</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  שמירת מיקום תוסיף מרחק להשוואה ותעדיף סניפים קרובים כשהמחיר זהה.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => gpsMutation.mutate()}
+                  disabled={gpsMutation.isPending}
+                  className="rounded-full bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-slate-800 disabled:opacity-60"
+                >
+                  השתמש במיקום
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigate('/account')}
+                  className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50"
+                >
+                  הגדרות
+                </button>
+                <button
+                  type="button"
+                  onClick={() => locationPromptMutation.mutate(true)}
+                  className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-500 transition hover:bg-slate-50"
+                >
+                  לא עכשיו
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
 
         <main className="flex-1 py-6">
           <Outlet />

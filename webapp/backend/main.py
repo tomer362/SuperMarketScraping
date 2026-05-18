@@ -45,6 +45,8 @@ from schemas import (
     ChainOfferOut,
     ChainOut,
     GenericProductGroupDetailOut,
+    LocationPromptUpdateIn,
+    LocationUpdateIn,
     LoginIn,
     MessageOut,
     ProductDetailOut,
@@ -61,6 +63,7 @@ from schemas import (
     SuggestResultOut,
     UserOut,
 )
+from location_service import geocode_address, now_utc, validate_coordinates
 from scraper_runner import run_deals_refresh, run_full_refresh
 from scheduler import RefreshScheduler
 from seed import seed_demo_catalog
@@ -127,6 +130,20 @@ scheduler = RefreshScheduler(
     settings.deals_refresh_interval_hours,
     _refresh_catalog,
 )
+
+
+def _user_out(user: User) -> UserOut:
+    return UserOut(
+        id=user.id,
+        username=user.username,
+        created_at=user.created_at,
+        location_lat=user.location_lat,
+        location_lng=user.location_lng,
+        location_label=user.location_label,
+        location_source=user.location_source,
+        location_updated_at=user.location_updated_at,
+        location_prompt_dismissed=bool(user.location_prompt_dismissed),
+    )
 
 
 @asynccontextmanager
@@ -216,7 +233,7 @@ async def register(
     await create_default_list_for_user(session, user)
     await create_session_cookie(response, session, user)
     await session.commit()
-    return AuthPayload(user=UserOut(id=user.id, username=user.username, created_at=user.created_at))
+    return AuthPayload(user=_user_out(user))
 
 
 @app.post("/api/auth/login", response_model=AuthPayload, tags=["Auth"])
@@ -236,7 +253,7 @@ async def login(
 
     await create_session_cookie(response, session, user)
     await session.commit()
-    return AuthPayload(user=UserOut(id=user.id, username=user.username, created_at=user.created_at))
+    return AuthPayload(user=_user_out(user))
 
 
 @app.post("/api/auth/logout", response_model=MessageOut, tags=["Auth"])
@@ -252,7 +269,69 @@ async def logout(
 
 @app.get("/api/auth/me", response_model=AuthPayload, tags=["Auth"])
 async def me(user: User = Depends(get_current_user)) -> AuthPayload:
-    return AuthPayload(user=UserOut(id=user.id, username=user.username, created_at=user.created_at))
+    return AuthPayload(user=_user_out(user))
+
+
+@app.patch("/api/account/location", response_model=AuthPayload, tags=["Account"])
+async def update_account_location(
+    payload: LocationUpdateIn,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> AuthPayload:
+    mode = payload.mode.strip().lower()
+    if mode == "coordinates":
+        if payload.latitude is None or payload.longitude is None:
+            raise HTTPException(status_code=400, detail="Latitude and longitude are required")
+        try:
+            latitude, longitude = validate_coordinates(payload.latitude, payload.longitude)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        user.location_lat = latitude
+        user.location_lng = longitude
+        user.location_label = (payload.label or "המיקום הנוכחי").strip()
+        user.location_source = "gps"
+    elif mode == "address":
+        query = (payload.query or "").strip()
+        if not query:
+            raise HTTPException(status_code=400, detail="Address query is required")
+        result = await geocode_address(query)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Location not found")
+        user.location_lat = result.latitude
+        user.location_lng = result.longitude
+        user.location_label = result.label
+        user.location_source = result.source
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported location mode")
+    user.location_updated_at = now_utc()
+    user.location_prompt_dismissed = True
+    await session.commit()
+    return AuthPayload(user=_user_out(user))
+
+
+@app.delete("/api/account/location", response_model=AuthPayload, tags=["Account"])
+async def clear_account_location(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> AuthPayload:
+    user.location_lat = None
+    user.location_lng = None
+    user.location_label = None
+    user.location_source = None
+    user.location_updated_at = None
+    await session.commit()
+    return AuthPayload(user=_user_out(user))
+
+
+@app.patch("/api/account/location-prompt", response_model=AuthPayload, tags=["Account"])
+async def update_location_prompt(
+    payload: LocationPromptUpdateIn,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> AuthPayload:
+    user.location_prompt_dismissed = payload.dismissed
+    await session.commit()
+    return AuthPayload(user=_user_out(user))
 
 
 @app.get("/api/chains", response_model=list[ChainOut], tags=["Meta"])
@@ -303,9 +382,10 @@ async def product_search(
 @app.get("/api/products/{product_id}", response_model=ProductDetailOut, tags=["Products"])
 async def product_detail(
     product_id: int,
+    user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> ProductDetailOut:
-    detail = await load_product_detail(session, product_id)
+    detail = await load_product_detail(session, product_id, user)
     if not detail:
         raise HTTPException(status_code=404, detail="Product not found")
     return ProductDetailOut(**detail)
@@ -314,9 +394,10 @@ async def product_detail(
 @app.get("/api/products/{product_id}/offers", response_model=list[ChainOfferOut], tags=["Products"])
 async def product_offers(
     product_id: int,
+    user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[ChainOfferOut]:
-    offers = await load_product_chain_offers(session, product_id)
+    offers = await load_product_chain_offers(session, product_id, user)
     if not offers:
         raise HTTPException(status_code=404, detail="Product not found")
     return [ChainOfferOut(**offer) for offer in offers]
@@ -326,12 +407,14 @@ async def product_offers(
 async def generic_group_detail(
     group_key: str,
     chains: str | None = Query(default=None),
+    user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> GenericProductGroupDetailOut:
     detail = await load_generic_group_detail(
         session,
         group_key,
         chain_filter=_parse_chain_filter(chains),
+        user=user,
     )
     if not detail:
         raise HTTPException(status_code=404, detail="Generic group not found")
@@ -518,7 +601,7 @@ async def compare_list(
     shopping_list = await get_user_list_with_items(session, user.id, shopping_list_id)
     if not shopping_list:
         raise HTTPException(status_code=404, detail="Shopping list not found")
-    return ShoppingListComparisonOut(**(await compare_shopping_list(session, shopping_list)))
+    return ShoppingListComparisonOut(**(await compare_shopping_list(session, shopping_list, user)))
 
 
 @app.get("/api/catalog/status", response_model=CatalogStatusOut, tags=["Catalog"])

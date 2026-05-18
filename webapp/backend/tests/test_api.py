@@ -20,6 +20,168 @@ async def test_register_and_me(client):
     me_response = await client.get('/api/auth/me')
     assert me_response.status_code == 200
     assert me_response.json()['user']['username'] == 'mobile_user'
+    assert me_response.json()['user']['location_prompt_dismissed'] is False
+
+
+@pytest.mark.asyncio
+async def test_account_location_coordinates_and_prompt(authenticated_client):
+    save_response = await authenticated_client.patch(
+        '/api/account/location',
+        json={
+            'mode': 'coordinates',
+            'latitude': 32.0853,
+            'longitude': 34.7818,
+            'label': 'תל אביב',
+        },
+    )
+    assert save_response.status_code == 200
+    user = save_response.json()['user']
+    assert user['location_label'] == 'תל אביב'
+    assert user['location_source'] == 'gps'
+    assert user['location_prompt_dismissed'] is True
+
+    prompt_response = await authenticated_client.patch('/api/account/location-prompt', json={'dismissed': False})
+    assert prompt_response.status_code == 200
+    assert prompt_response.json()['user']['location_prompt_dismissed'] is False
+
+    clear_response = await authenticated_client.delete('/api/account/location')
+    assert clear_response.status_code == 200
+    assert clear_response.json()['user']['location_lat'] is None
+
+
+@pytest.mark.asyncio
+async def test_account_location_validation_and_manual_geocode(authenticated_client, monkeypatch):
+    invalid_response = await authenticated_client.patch(
+        '/api/account/location',
+        json={'mode': 'coordinates', 'latitude': 120, 'longitude': 34},
+    )
+    assert invalid_response.status_code == 400
+
+    empty_response = await authenticated_client.patch(
+        '/api/account/location',
+        json={'mode': 'address', 'query': ''},
+    )
+    assert empty_response.status_code == 400
+
+    async def fake_geocode_address(query):
+        return SimpleNamespace(latitude=32.1, longitude=34.8, label=f'{query} resolved', source='nominatim')
+
+    import main
+
+    monkeypatch.setattr(main, 'geocode_address', fake_geocode_address)
+    manual_response = await authenticated_client.patch(
+        '/api/account/location',
+        json={'mode': 'address', 'query': 'דיזנגוף תל אביב'},
+    )
+    assert manual_response.status_code == 200
+    user = manual_response.json()['user']
+    assert user['location_source'] == 'nominatim'
+    assert user['location_label'] == 'דיזנגוף תל אביב resolved'
+
+
+@pytest.mark.asyncio
+async def test_store_branch_upsert_deduplicates(authenticated_client):
+    from db import async_session_factory
+    from location_service import upsert_store_branches
+    from models import StoreBranch
+
+    async with async_session_factory() as session:
+        rows = [
+            {
+                'chain': 'carrefour',
+                'store_id': '3003',
+                'store_name': 'קרפור כפר סבא',
+                'city': 'כפר סבא',
+                'address': 'ויצמן 1',
+                'lat': 32.17,
+                'lng': 34.91,
+                'geocode_status': 'resolved',
+            },
+            {
+                'chain': 'carrefour',
+                'store_id': '3003',
+                'store_name': 'קרפור כפר סבא חדש',
+                'city': 'כפר סבא',
+                'address': 'ויצמן 2',
+                'lat': 32.18,
+                'lng': 34.92,
+                'geocode_status': 'resolved',
+            },
+        ]
+        await upsert_store_branches(session, rows)
+        await session.commit()
+
+        branches = (
+            await session.execute(
+                select(StoreBranch).where(
+                    StoreBranch.chain == 'carrefour',
+                    StoreBranch.store_id == '3003',
+                )
+            )
+        ).scalars().all()
+        assert len(branches) == 1
+        assert branches[0].store_name == 'קרפור כפר סבא חדש'
+
+
+@pytest.mark.asyncio
+async def test_comparison_uses_distance_only_after_price_tie(authenticated_client):
+    from db import async_session_factory
+    from location_service import upsert_store_branches
+    from models import CatalogOffer
+
+    await authenticated_client.patch(
+        '/api/account/location',
+        json={'mode': 'coordinates', 'latitude': 32.0853, 'longitude': 34.7818, 'label': 'תל אביב'},
+    )
+
+    async with async_session_factory() as session:
+        offers = (
+            await session.execute(
+                select(CatalogOffer)
+                .where(CatalogOffer.is_active.is_(True))
+                .where(CatalogOffer.chain == 'carrefour')
+                .where(CatalogOffer.name.like('%ביצים%'))
+            )
+        ).scalars().all()
+        assert len(offers) >= 2
+        for offer in offers:
+            offer.price = 14.0
+            offer.regular_price = 14.0
+        await upsert_store_branches(session, [
+            {
+                'chain': 'carrefour',
+                'store_id': '3003',
+                'store_name': 'קרפור כפר סבא',
+                'city': 'כפר סבא',
+                'lat': 32.1782,
+                'lng': 34.9076,
+                'geocode_status': 'resolved',
+            },
+            {
+                'chain': 'carrefour',
+                'store_id': '3014',
+                'store_name': 'קרפור תל אביב',
+                'city': 'תל אביב',
+                'lat': 32.0853,
+                'lng': 34.7818,
+                'geocode_status': 'resolved',
+            },
+        ])
+        await session.commit()
+
+    search_response = await authenticated_client.get('/api/products/search', params={'q': 'ביצים'})
+    product = search_response.json()['products'][0]
+    list_response = await authenticated_client.post('/api/lists', json={'name': 'מרחק'})
+    shopping_list = list_response.json()
+    await authenticated_client.post(
+        f"/api/lists/{shopping_list['id']}/items",
+        json={'canonical_product_id': product['id'], 'quantity': 1},
+    )
+    comparison_response = await authenticated_client.get(f"/api/lists/{shopping_list['id']}/comparison")
+    assert comparison_response.status_code == 200
+    carrefour = next(chain for chain in comparison_response.json()['chains'] if chain['chain'] == 'carrefour')
+    assert carrefour['store_id'] == '3014'
+    assert carrefour['distance_km'] == pytest.approx(0.0)
 
 
 @pytest.mark.asyncio

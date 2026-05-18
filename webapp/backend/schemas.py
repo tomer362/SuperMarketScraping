@@ -20,6 +20,12 @@ class UserOut(BaseModel):
     id: int
     username: str
     created_at: datetime
+    location_lat: float | None = None
+    location_lng: float | None = None
+    location_label: str | None = None
+    location_source: str | None = None
+    location_updated_at: datetime | None = None
+    location_prompt_dismissed: bool = False
 
 
 class AuthPayload(BaseModel):
@@ -34,6 +40,18 @@ class RegisterIn(BaseModel):
 class LoginIn(BaseModel):
     username: str
     password: str
+
+
+class LocationUpdateIn(BaseModel):
+    mode: str
+    latitude: float | None = None
+    longitude: float | None = None
+    label: str | None = Field(default=None, max_length=255)
+    query: str | None = Field(default=None, max_length=255)
+
+
+class LocationPromptUpdateIn(BaseModel):
+    dismissed: bool = True
 
 
 class ChainOut(BaseModel):
@@ -124,6 +142,7 @@ class ChainOfferOut(BaseModel):
     product_url: str | None = None
     deal: DealOut | None = None
     scraped_at: str
+    distance_km: float | None = None
 
 
 class ProductDetailOut(BaseModel):
@@ -219,6 +238,7 @@ class BasketComparisonChainOut(BaseModel):
     missing_count: int
     missing_products: list[str]
     applied_deals_count: int
+    distance_km: float | None = None
     items: list[BasketComparisonLineOut]
 
 

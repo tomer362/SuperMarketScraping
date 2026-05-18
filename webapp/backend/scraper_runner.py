@@ -27,6 +27,7 @@ from catalog_service import (
     upsert_catalog_products,
 )
 from chains import ChainDefinition, iter_active_chains
+from location_service import normalize_branch_payload, upsert_store_branches
 from models import CatalogOffer, CatalogRefreshRun
 
 
@@ -43,16 +44,56 @@ def _validate_products_deal_contract(products: list[dict[str, Any]]) -> list[str
     return validate_products_deal_contract(products, max_errors=20)
 
 
+def _extract_branch_metadata(
+    chain_key: str,
+    module: Any,
+    result: dict[str, Any],
+    products: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    branches: list[dict[str, Any]] = []
+    for raw_branch in result.get("store_branches") or []:
+        branch = normalize_branch_payload(chain_key, raw_branch)
+        if branch:
+            branches.append(branch)
+
+    for attr_name in ("ONLINE_BRANCHES", "ONLINE_STORES"):
+        for raw_branch in getattr(module, attr_name, []) or []:
+            branch = normalize_branch_payload(chain_key, raw_branch)
+            if branch:
+                branches.append(branch)
+
+    seen_keys = {(branch["chain"], branch["store_id"]) for branch in branches}
+    for product in products:
+        key = (str(product.get("chain", chain_key)), str(product.get("store_id", "")))
+        if not key[1] or key in seen_keys:
+            continue
+        branch = normalize_branch_payload(
+            key[0],
+            {
+                "store_id": key[1],
+                "store_name": product.get("store_name") or key[1],
+            },
+        )
+        if branch:
+            branches.append(branch)
+            seen_keys.add(key)
+
+    unique: dict[tuple[str, str], dict[str, Any]] = {}
+    for branch in branches:
+        unique[(branch["chain"], branch["store_id"])] = branch
+    return list(unique.values())
+
+
 async def _run_chain(
     chain: ChainDefinition,
     *,
     refresh_kind: str = "prices",
-) -> tuple[str, list[dict[str, Any]], list[str]]:
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     try:
         module = importlib.import_module(chain.scraper_module)
     except Exception as exc:
         logger.error("Failed to import %s: %s", chain.scraper_module, exc)
-        return chain.key, [], [f"import_error: {exc}"]
+        return chain.key, [], [], [f"import_error: {exc}"]
 
     try:
         scrape_func = getattr(module, "scrape_deals", None) if refresh_kind == "deals" else None
@@ -61,7 +102,7 @@ async def _run_chain(
         result = await scrape_func()
     except Exception as exc:
         logger.error("Scrape failed for %s: %s", chain.key, exc, exc_info=True)
-        return chain.key, [], [f"scrape_error: {exc}"]
+        return chain.key, [], [], [f"scrape_error: {exc}"]
 
     products: list[dict[str, Any]] = []
     for store_products in (result.get("products_by_store") or {}).values():
@@ -82,7 +123,8 @@ async def _run_chain(
         refresh_kind,
         len(errors),
     )
-    return chain.key, products, errors
+    branches = _extract_branch_metadata(chain.key, module, result, products)
+    return chain.key, products, branches, errors
 
 
 async def run_full_refresh(
@@ -128,9 +170,11 @@ async def run_full_refresh(
             await session.commit()
             continue
 
-        chain_key, products, errors = result
+        chain_key, products, branches, errors = result
         if errors:
             all_errors.extend(f"{chain_key}: {error}" for error in errors)
+        if branches:
+            await upsert_store_branches(session, branches)
         if products:
             upserted = await upsert_catalog_products(
                 session,
@@ -245,7 +289,7 @@ async def run_deals_refresh(
     ]
     for completed in asyncio.as_completed(tasks):
         result = await completed
-        chain_key, products, errors = result
+        chain_key, products, branches, errors = result
         if errors:
             chains_failed.append(chain_key)
             all_errors.extend(f"{chain_key}: {error}" for error in errors)
@@ -253,6 +297,8 @@ async def run_deals_refresh(
             run.errors = list(all_errors)
             await session.commit()
             continue
+        if branches:
+            await upsert_store_branches(session, branches)
         if not products:
             chains_failed.append(chain_key)
             all_errors.append(f"{chain_key}: no products returned")

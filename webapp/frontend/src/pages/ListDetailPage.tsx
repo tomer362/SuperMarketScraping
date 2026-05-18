@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { compareList, deleteList, deleteListItem, getList, renameList, updateListItem } from '../api';
 import ProductImage from '../components/ProductImage';
-import { formatCurrency, formatQuantity } from '../lib/format';
+import { formatCurrency, formatDistance, formatQuantity } from '../lib/format';
 import type { ShoppingListItem } from '../types';
 
 function quantityStep(isWeighable: boolean): number {
@@ -295,7 +295,10 @@ export default function ListDetailPage() {
                         </span>
                       )}
                     </div>
-                    <p className="mt-1 text-sm text-slate-500">{chain.store_name}</p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {chain.store_name}
+                      {formatDistance(chain.distance_km) ? ` · ${formatDistance(chain.distance_km)}` : ''}
+                    </p>
                   </div>
                   <div className="text-left">
                     <p className="text-3xl font-black text-slate-900">{formatCurrency(chain.total_price)}</p>
