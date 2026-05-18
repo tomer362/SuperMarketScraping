@@ -112,7 +112,7 @@ export default function SearchPage() {
 
   return (
     <>
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,1.1fr)_20rem]">
+    <div className="mx-auto max-w-5xl">
       <section className="space-y-4">
         <div className="rounded-[34px] border border-white/80 bg-white/95 p-5 shadow-[0_20px_60px_-36px_rgba(15,23,42,0.35)] sm:p-6">
           <div className="flex items-start justify-between gap-4">
@@ -283,30 +283,6 @@ export default function SearchPage() {
           </div>
         )}
       </section>
-
-      <aside className="space-y-4">
-        <div className="rounded-[34px] border border-sky-100 bg-sky-50/90 p-5 shadow-[0_16px_40px_-34px_rgba(14,165,233,0.4)]">
-          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-700">Flow</p>
-          <ol className="mt-4 space-y-4 text-sm text-slate-700">
-            <li className="rounded-2xl bg-white px-4 py-3 shadow-sm">
-              1. מצאי מוצר מדויק מתוך ההצעות האוטומטיות.
-            </li>
-            <li className="rounded-2xl bg-white px-4 py-3 shadow-sm">
-              2. פתחי את דף ההשוואה כדי לראות מחירים לכל רשת.
-            </li>
-            <li className="rounded-2xl bg-white px-4 py-3 shadow-sm">
-              3. הוסיפי לרשימה קיימת או חדשה והשווי סל מלא.
-            </li>
-          </ol>
-        </div>
-
-        <div className="rounded-[34px] border border-white/80 bg-white/95 p-5 shadow-sm">
-          <p className="text-sm font-black text-slate-900">למה צריך 3 תווים?</p>
-          <p className="mt-2 text-sm leading-6 text-slate-500">
-            כדי להוריד עומס מיותר על השרת, למנוע ספאם בחיפושים קצרים מדי, ולשמור על חוויה מהירה במיוחד במובייל.
-          </p>
-        </div>
-      </aside>
     </div>
     </>
   );
