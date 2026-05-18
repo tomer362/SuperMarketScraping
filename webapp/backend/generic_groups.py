@@ -80,6 +80,7 @@ def classify_generic_offer(offer: Any) -> GenericGroup | None:
     lactose_free = "נטול לקטוז" in name or "ללא לקטוז" in name
     gluten_free = "ללא גלוטן" in name or "נטול גלוטן" in name
     kosher = "מהדרין" in name or "בדצ" in name or "בדץ" in name or "עדה חרדית" in name
+    enriched = "מועשר" in name
 
     if "חלב" in name and not _contains_any(name, {"משקה", "מעדן", "חטיף", "עוגיות", "קרם"}):
         fat = _fat(raw_name or "")
@@ -93,6 +94,8 @@ def classify_generic_offer(offer: Any) -> GenericGroup | None:
             flags.append("organic")
         if kosher:
             flags.append("kosher")
+        if enriched:
+            flags.append("enriched")
         label = f"חלב {fat}% {_size_label(unit_dimension, qty)}"
         if lactose_free:
             label += " נטול לקטוז"
@@ -102,6 +105,8 @@ def classify_generic_offer(offer: Any) -> GenericGroup | None:
             label += " אורגני"
         if kosher:
             label += " מהדרין"
+        if enriched:
+            label += " מועשר"
         key = "milk|" + "|".join(flags)
         return GenericGroup(key=key, family="milk", label=label)
 
