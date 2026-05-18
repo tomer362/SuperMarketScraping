@@ -179,6 +179,7 @@ async def _gql_get(
         _do,
         max_retries=max_retries,
         base_delay=base_delay,
+        attempt_timeout=25.0,
         label=f"gql_get store={store_code}",
     )
 
@@ -203,7 +204,11 @@ async def _gql_post(
             return await resp.json(content_type=None)
 
     return await with_retry(
-        _do, max_retries=max_retries, base_delay=base_delay, label=label
+        _do,
+        max_retries=max_retries,
+        base_delay=base_delay,
+        attempt_timeout=25.0,
+        label=label,
     )
 
 
@@ -476,7 +481,7 @@ async def _scrape_category(
     page_info = gql_products.get("page_info", {})
     total_pages: int = page_info.get("total_pages", 1)
 
-    logger.info(
+    logger.debug(
         "store=%s category=%s search='%s': %d products, %d pages",
         store_code,
         category_id,
@@ -617,7 +622,8 @@ async def scrape(
     stores: Optional[List[Store]] = None,
     flt: Optional[ScrapeFilter] = None,
     batch_size: int = 100,  # PAGE_SIZE; kept for API parity
-    max_concurrent: int = 15,
+    max_concurrent: int = 6,
+    store_concurrent: int = 2,
     max_retries: int = 3,
     base_retry_delay: float = 1.0,
 ) -> ScrapeResult:
@@ -648,12 +654,11 @@ async def scrape(
                 session, max_retries=max_retries, base_delay=base_retry_delay
             )
 
-        category_ids = await fetch_categories(
+        category_ids = flt.get("category_ids") or await fetch_categories(
             session, max_retries=max_retries, base_delay=base_retry_delay
         )
 
-        products_by_store: Dict[str, List[UnifiedProduct]] = {}
-        for store in stores:
+        async def _scrape_one_store(store: Store) -> tuple[str, List[UnifiedProduct], Optional[str]]:
             try:
                 prods = await _scrape_store(
                     session,
@@ -665,12 +670,25 @@ async def scrape(
                     base_retry_delay,
                     scraped_at,
                 )
-                products_by_store[store["store_code"]] = prods
+                return store["store_code"], prods, None
             except Exception as exc:
                 msg = f"store={store['store_code']} failed: {exc}"
                 logger.error(msg)
+                return store["store_code"], [], msg
+
+        products_by_store: Dict[str, List[UnifiedProduct]] = {}
+        task_fns = [lambda store=store: _scrape_one_store(store) for store in stores]
+        results = await run_concurrently(task_fns, max_concurrent=store_concurrent)
+        for result in results:
+            if isinstance(result, Exception):
+                msg = f"store task failed: {result}"
+                logger.error(msg)
                 errors.append(msg)
-                products_by_store[store["store_code"]] = []
+                continue
+            store_code, products, error = result
+            if error:
+                errors.append(error)
+            products_by_store[store_code] = products
 
     duration = time.monotonic() - t0
     total = sum(len(v) for v in products_by_store.values())

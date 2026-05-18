@@ -81,16 +81,16 @@ RETRY_DELAY = 2               # Seconds before retrying
 
 | Chain | Hebrew | Platform | Retailer ID | Branches | File |
 |-------|--------|----------|-------------|----------|------|
-| **tivtaam** | טיב טעם | Stor.ai | 1062 | 7 | `scrapers/tivtaam/tivtaam.py` |
-| **carrefour** | קארפור | Stor.ai | 1540 | 22+ | `scrapers/carrefour/carrefour.py` |
+| **tivtaam** | טיב טעם | Stor.ai | 1062 | 9 curated | `scrapers/tivtaam/tivtaam.py` |
+| **carrefour** | קארפור | Stor.ai | 1540 | 17 live | `scrapers/carrefour/carrefour.py` |
 | **shufersal** | שופרסל | Custom JSON | — | 1 (chain-wide) | `scrapers/shufersal/shufersal.py` |
 | **yochananof** | יוחננוף | Magento 2 GraphQL | — | 20+ | `scrapers/yochananof/yochananof.py` |
-| **machsanei_hashook** | מחסני השוק | ZuZ | 1107 | 1 | `scrapers/machsanei_hashook/machsanei_hashook.py` |
+| **machsanei_hashook** | מחסני השוק | ZuZ | 1107 | 9 live | `scrapers/machsanei_hashook/machsanei_hashook.py` |
 | **ramilevi** | רמי לוי | Custom Node.js/Elasticsearch | — | 22+ | `scrapers/ramilevi/ramilevi.py` |
 | **keshet** | קשת טעמים | ZuZ | 1219 | 30+ | `scrapers/keshet/keshet.py` |
-| **quik** | קוויק | ZuZ | 1541 | 17 | `scrapers/quik/quik.py` |
-| **victory** | ויקטורי | ZuZ | 1470 | 30+ | `scrapers/victory/victory.py` |
-| **ybitan** | יינות ביתן | ZuZ | 1131 | 17+ | `scrapers/ybitan/ybitan.py` |
+| **quik** | קוויק | ZuZ | 1541 | 16 live | `scrapers/quik/quik.py` |
+| **victory** | ויקטורי | ZuZ | 1470 | 60 live | `scrapers/victory/victory.py` |
+| **ybitan** | יינות ביתן | ZuZ | 1131 | 23 live | `scrapers/ybitan/ybitan.py` |
 
 ---
 
@@ -110,25 +110,28 @@ Query params: `appId=4`, `from={offset}`, `size={page_size}`, `languageId=1`
 
 **Retry**: Exponential backoff on 5xx or timeout.
 
-**Branch/Store Discovery**: Hardcoded in `ONLINE_BRANCHES` list.
+**Branch/Store Discovery**: `carrefour` now discovers branches live by default when
+`branches=None`; `tivtaam` keeps a curated static list.
 
 ---
 
 ### ZuZ (machsanei_hashook, keshet, quik, victory, ybitan)
 
-**Endpoint**: `GET /api/v1/{appId}/{retailer_id}/{branch_id}/{category_id}`
+**Endpoint**: `GET /v2/retailers/{retailer_id}/branches/{branch_id}/categories/{category_id}/products`
 
-Query params: `page={page_num}`, `itemsPerPage=100`
+Query params: `appId=4`, `from={offset}`, `size={page_size}`, `languageId=1`
 
 **Pattern**:
 1. Fetch available categories from ZuZ.
 2. For each branch, iterate all categories.
-3. Page-paginate through category products (`page=1,2,3,...` until empty).
+3. Offset-paginate through category products (`from=0,size=100` then advance by size).
 4. Extract deals from product objects (usually `product.branch.specials[]` or similar).
 
 **Barcode Extraction**: Many chains store barcodes in image CDN URLs (e.g. `https://cdn.zuuz.co.il/img/product/.../<EAN>.jpg`). Extract via regex when `barcode` field is null.
 
-**Branch/Store Discovery**: Hardcoded in `ONLINE_BRANCHES` list per scraper.
+**Branch/Store Discovery**: `machsanei_hashook`, `ybitan`, `quik`, and `victory`
+discover branches live by default when `branches=None`. `keshet` currently uses
+its static branch list.
 
 ---
 
@@ -233,8 +236,9 @@ Request body: `{"store": <internet_store_id>, "q": "", "from": <offset>, "size":
 ### Catalog Refresh
 - Refreshes scrape into staging tables first.
 - The active catalog remains readable while refresh is running.
-- Active offers and generic groups are replaced only when all active chains complete successfully.
-- If any chain fails, staging is cleared and the previous active catalog remains available.
+- Active offers and generic groups are replaced when staging has enough data:
+  either all chains succeed, or partial activation passes the minimum-size guard.
+- If staging is too small (or empty), staging is cleared and previous active data remains.
 - Vercel deployments trigger refresh via `GET /api/catalog/refresh/cron` with `CATALOG_REFRESH_TOKEN` or `CRON_SECRET` when configured.
 
 ### Quantity Pricing

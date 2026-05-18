@@ -2,7 +2,7 @@
 
 > Platform: **ZuZ** (AngularJS) — Retailer ID `1470`
 > Base URL: `https://www.victoryonline.co.il`
-> Research date: 2026-03
+> Research date: 2026-03 (updated 2026-05-16)
 
 ---
 
@@ -12,7 +12,12 @@ Victory's online store runs on the **ZuZ** platform with the `appId=4` per-branc
 
 The global `/v2/retailers/1470/products` endpoint (appId=2) is **capped** and misses many products.  Use the per-branch/per-category approach.
 
-Victory has the largest branch list among the ZuZ chains (~55 branches including both online and physical stores).
+Victory has one of the largest branch lists among the ZuZ chains.
+
+Coverage update (2026-05-16):
+- Live API branch audit returned `60` branches while the old static list had `55`.
+- Scraper default flow now uses live branch discovery (`/branches`) when no explicit
+  branch list is provided.
 
 ---
 

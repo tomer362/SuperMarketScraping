@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
 import ssl
 import sys
@@ -333,6 +334,8 @@ async def with_retry(
     max_retries: int = 3,
     base_delay: float = 1.0,
     max_delay: float = 30.0,
+    attempt_timeout: float | None = 30.0,
+    jitter_ratio: float = 0.2,
     label: str = "",
 ) -> Any:
     """Call ``coro_fn()`` up to ``max_retries`` times with exponential backoff.
@@ -348,17 +351,25 @@ async def with_retry(
       attempt 3 → base_delay*4 (e.g. 4 s)
       …
 
+    If ``attempt_timeout`` is set, each try is bounded with ``asyncio.wait_for``.
+    A small jitter is added to sleep duration to avoid synchronized retries.
+
     Raises the last exception when all retries are exhausted.
     """
     last_exc: Exception = RuntimeError("No attempts made")
     for attempt in range(max_retries):
         try:
+            if attempt_timeout is not None and attempt_timeout > 0:
+                return await asyncio.wait_for(coro_fn(), timeout=attempt_timeout)
             return await coro_fn()
         except Exception as exc:
             last_exc = exc
             if attempt == max_retries - 1:
                 raise
             delay = min(base_delay * (2**attempt), max_delay)
+            if jitter_ratio > 0:
+                jitter = delay * jitter_ratio
+                delay = max(0.0, delay + random.uniform(-jitter, jitter))
             tag = f" [{label}]" if label else ""
             logger.warning(
                 "Attempt %d/%d failed%s: %s — retrying in %.1fs",

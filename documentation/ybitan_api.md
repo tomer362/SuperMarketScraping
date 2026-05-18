@@ -2,7 +2,7 @@
 
 > Platform: **ZuZ** (AngularJS) — Retailer ID `1131`
 > Base URL: `https://www.ybitan.co.il`
-> Research date: 2026-03
+> Research date: 2026-03 (updated 2026-05-16)
 
 ---
 
@@ -13,6 +13,12 @@ Yenot Bitan's online store runs on the **ZuZ** platform with the `appId=4` per-b
 The global `/v2/retailers/1131/products` endpoint (appId=2) is **capped**.  Use the per-branch/per-category approach for complete data.
 
 Yenot Bitan operates both "Yenot Bitan Online" and "Bitan Market" branded branches — both are scraped.
+
+Coverage update (2026-05-16):
+- Live API branch audit found an additional active branch `1033` with product-bearing
+  categories.
+- Scraper default flow now uses live branch discovery (`/branches`) when no explicit
+  branch list is provided.
 
 ---
 
@@ -33,7 +39,7 @@ GET /v2/retailers/1131/branches?appId=2&languageId=1
 }
 ```
 
-**Known online branch IDs (as of 2026-03):**
+**Known online branch IDs (as of 2026-05):**
 
 | ID   | Name                             | City            |
 |------|----------------------------------|-----------------|
@@ -59,6 +65,7 @@ GET /v2/retailers/1131/branches?appId=2&languageId=1
 | 2325 | אשדוד ח' - ביתן מרקט             | אשדוד          |
 | 2080 | הרצליה לב הרצליה - ביתן מרקט    | הרצליה         |
 | 985  | מעלה אדומים - ביתן מרקט          | מעלה אדומים    |
+| 1033 | רמלה - ביתן מרקט +Online         | רמלה            |
 
 ---
 

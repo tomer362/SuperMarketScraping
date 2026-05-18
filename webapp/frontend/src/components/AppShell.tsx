@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { getCatalogStatus, getChains, triggerCatalogRefresh } from '../api';
+import { getCatalogStatus, triggerCatalogRefresh } from '../api';
 import { useAuth } from '../app/AuthProvider';
 import { useTheme } from '../app/theme';
 import { formatRelativeDate } from '../lib/format';
@@ -12,11 +12,10 @@ export default function AppShell() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const chainsQuery = useQuery({ queryKey: ['chains'], queryFn: getChains });
   const statusQuery = useQuery({
     queryKey: ['catalog-status'],
     queryFn: getCatalogStatus,
-    refetchInterval: 45_000,
+    refetchInterval: (query) => (query.state.data?.refresh_in_progress ? 10_000 : 45_000),
   });
 
   const refreshMutation = useMutation({
@@ -24,12 +23,10 @@ export default function AppShell() {
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['catalog-status'] }),
-        queryClient.invalidateQueries({ queryKey: ['chains'] }),
       ]);
     },
   });
-
-  const disabledChains = chainsQuery.data?.filter((chain) => !chain.enabled) ?? [];
+  const refreshInProgress = Boolean(statusQuery.data?.refresh_in_progress);
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_#dbeafe,_#eff6ff_30%,_#f8fafc_60%)] text-slate-900">
@@ -67,11 +64,6 @@ export default function AppShell() {
                   </span>
                   <span>עדכון אחרון: {formatRelativeDate(statusQuery.data?.last_successful_refresh?.finished_at)}</span>
                 </div>
-                {disabledChains.length > 0 && (
-                  <p className="mt-2 text-xs text-amber-700">
-                    {disabledChains.map((chain) => chain.label).join(', ')} לא פעילה כרגע.
-                  </p>
-                )}
               </div>
 
               <div className="flex items-center justify-between gap-2 sm:justify-end">
@@ -79,9 +71,9 @@ export default function AppShell() {
                   type="button"
                   onClick={() => refreshMutation.mutate()}
                   className="rounded-full border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-700 transition hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
-                  disabled={refreshMutation.isPending}
+                  disabled={refreshMutation.isPending || refreshInProgress}
                 >
-                  {refreshMutation.isPending ? 'מעדכן קטלוג...' : 'רענן קטלוג'}
+                  {refreshMutation.isPending || refreshInProgress ? 'מעדכן קטלוג...' : 'רענן קטלוג'}
                 </button>
                 <button
                   type="button"
@@ -136,7 +128,9 @@ function BottomNavItem({ to, label }: { to: string; label: string }) {
       className={({ isActive }) =>
         classNames(
           'flex min-h-14 items-center justify-center rounded-[22px] px-4 text-sm font-semibold transition',
-          isActive ? 'bg-slate-900 text-white shadow-lg' : 'bg-slate-50 text-slate-600 hover:bg-slate-100',
+          isActive
+            ? 'border border-sky-200 bg-sky-100 text-sky-950 shadow-sm'
+            : 'bg-slate-50 text-slate-600 hover:bg-slate-100',
         )
       }
     >

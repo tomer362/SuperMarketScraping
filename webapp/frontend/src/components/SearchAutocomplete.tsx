@@ -55,7 +55,7 @@ export default function SearchAutocomplete({ query, chains, onSelect }: SearchAu
               </div>
               <div className="shrink-0 text-left">
                 <p className="text-sm font-bold text-sky-700">{formatCurrency(item.cheapest_price)}</p>
-                <p className="text-xs text-slate-500">{item.cheapest_chain_label}</p>
+                <p className="text-xs text-slate-500">מחיר התחלתי</p>
               </div>
             </button>
           </li>

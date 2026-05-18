@@ -186,7 +186,11 @@ async def _fetch_page(
 
     try:
         return await with_retry(
-            _do, max_retries=max_retries, base_delay=base_delay, label=label
+            _do,
+            max_retries=max_retries,
+            base_delay=base_delay,
+            attempt_timeout=25.0,
+            label=label,
         )
     except Exception as exc:
         logger.error("Failed %s: %s", label or full_url, exc)
@@ -726,15 +730,16 @@ async def _scrape_branch(
 async def scrape(
     branches: Optional[List[Branch]] = None,
     flt: Optional[ScrapeFilter] = None,
-    batch_size: int = 100,
+    batch_size: int = 300,
     max_concurrent: int = 15,
+    branch_concurrent: int = 4,
     max_retries: int = 3,
     base_retry_delay: float = 1.0,
 ) -> ScrapeResult:
     """Scrape Carrefour Israel and return a unified ScrapeResult.
 
     Args:
-        branches:         Branches to scrape (default: all ONLINE_BRANCHES).
+        branches:         Branches to scrape (default: live API branches).
         flt:              Optional filters (name_query, category_ids, barcode).
         batch_size:       Products per paginated request.
         max_concurrent:   Max concurrent category requests per branch.
@@ -744,8 +749,6 @@ async def scrape(
     Returns:
         ScrapeResult with products_by_store keyed by str(branch_id).
     """
-    if branches is None:
-        branches = ONLINE_BRANCHES
     if flt is None:
         flt = {}
 
@@ -755,6 +758,18 @@ async def scrape(
 
     connector = aiohttp.TCPConnector(ssl=make_ssl_context())
     async with aiohttp.ClientSession(connector=connector) as session:
+        if branches is None:
+            live_branches = await fetch_branches(session)
+            if live_branches:
+                branches = live_branches
+                logger.info("carrefour: using %d live branches from API", len(branches))
+            else:
+                branches = ONLINE_BRANCHES
+                logger.warning(
+                    "carrefour: live branch discovery failed; falling back to %d static branch(es)",
+                    len(branches),
+                )
+
         # Discover categories once from the first branch (chain-wide)
         shared_categories: Optional[List[str]] = None
         if not flt.get("name_query") and not flt.get("category_ids") and branches:
@@ -765,8 +780,7 @@ async def scrape(
                 session, branches[0]["id"], max_concurrent=max_concurrent
             )
 
-        products_by_store: Dict[str, List[UnifiedProduct]] = {}
-        for branch in branches:
+        async def _scrape_one_branch(branch: Branch) -> tuple[str, List[UnifiedProduct], Optional[str]]:
             try:
                 prods = await _scrape_branch(
                     session,
@@ -779,12 +793,25 @@ async def scrape(
                     base_retry_delay,
                     scraped_at,
                 )
-                products_by_store[str(branch["id"])] = prods
+                return str(branch["id"]), prods, None
             except Exception as exc:
                 msg = f"branch={branch['id']} failed: {exc}"
                 logger.error(msg)
+                return str(branch["id"]), [], msg
+
+        products_by_store: Dict[str, List[UnifiedProduct]] = {}
+        task_fns = [lambda branch=branch: _scrape_one_branch(branch) for branch in branches]
+        results = await run_concurrently(task_fns, max_concurrent=branch_concurrent)
+        for result in results:
+            if isinstance(result, Exception):
+                msg = f"branch task failed: {result}"
+                logger.error(msg)
                 errors.append(msg)
-                products_by_store[str(branch["id"])] = []
+                continue
+            branch_id, products, error = result
+            if error:
+                errors.append(error)
+            products_by_store[branch_id] = products
 
     duration = time.monotonic() - t0
     total = sum(len(v) for v in products_by_store.values())

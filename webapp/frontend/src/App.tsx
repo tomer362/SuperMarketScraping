@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from './app/AuthProvider';
 import { ThemeProvider } from './app/theme';
 import AppShell from './components/AppShell';
 import AccountPage from './pages/AccountPage';
+import GroupPage from './pages/GroupPage';
 import ListDetailPage from './pages/ListDetailPage';
 import ListsPage from './pages/ListsPage';
 import LoginPage from './pages/LoginPage';
@@ -26,6 +27,7 @@ const router = createBrowserRouter([
         children: [
           { index: true, element: <SearchPage /> },
           { path: 'products/:productId', element: <ProductPage /> },
+          { path: 'groups/:groupKey', element: <GroupPage /> },
           { path: 'lists', element: <ListsPage /> },
           { path: 'lists/:listId', element: <ListDetailPage /> },
           { path: 'account', element: <AccountPage /> },

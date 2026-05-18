@@ -90,8 +90,8 @@ def validate_product_deal_contract(product: dict[str, Any]) -> list[str]:
             errors.append(f"{location}: price_reduction price_per_unit must equal deal_price")
 
     if deal_type == "multi_buy":
-        if min_qty is None or min_qty < 2:
-            errors.append(f"{location}: multi_buy deal_min_qty must be at least 2")
+        if min_qty is None or min_qty < 1:
+            errors.append(f"{location}: multi_buy deal_min_qty must be positive")
         if deal_price is None or deal_price <= 0:
             errors.append(f"{location}: multi_buy deal_price must be positive")
         if deal_price is not None and min_qty and min_qty > 0:

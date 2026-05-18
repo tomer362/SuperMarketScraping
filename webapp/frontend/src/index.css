@@ -61,6 +61,7 @@ body {
 
 :root[data-theme="dark"] .bg-slate-100,
 :root[data-theme="dark"] .bg-sky-50,
+:root[data-theme="dark"] .bg-sky-100,
 :root[data-theme="dark"] .bg-sky-50\/90,
 :root[data-theme="dark"] .bg-emerald-50,
 :root[data-theme="dark"] .bg-emerald-50\/70,
@@ -89,6 +90,12 @@ body {
 :root[data-theme="dark"] .text-sky-700,
 :root[data-theme="dark"] .text-sky-600 {
   color: #7dd3fc !important;
+}
+
+:root[data-theme="dark"] .text-sky-950,
+:root[data-theme="dark"] .text-sky-900,
+:root[data-theme="dark"] .text-sky-800 {
+  color: #e0f2fe !important;
 }
 
 :root[data-theme="dark"] .text-emerald-700 {

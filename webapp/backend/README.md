@@ -36,6 +36,27 @@ Key settings are read from `settings.py`:
 - `CATALOG_REFRESH_TOKEN` or `CRON_SECRET`
 - `SEED_TEST_DATA`
 - `RESET_TEST_DB_ON_START`
+- `LOG_LEVEL`
+- `CATALOG_DEBUG`
+
+## Debug Logging
+
+Set `CATALOG_DEBUG=1` to enable verbose search and comparison diagnostics.
+
+This logs:
+- request method/path/query/status/timing
+- normalized search query, chain filters, exact/fuzzy result counts, returned IDs
+- product-detail equivalent canonical IDs and chain/store offer coverage
+- shopping-list comparison exact IDs, generic groups, equivalent IDs, candidate stores
+- per-chain/per-store totals, missing products, and the selected best result
+
+For a full local live-debug session, start with:
+
+```bash
+./run-webapp.sh --debug
+```
+
+Frontend API request/response logging is enabled by `VITE_API_DEBUG=1`, which `./run-webapp.sh --debug` sets automatically for the Vite dev server.
 
 ## Vercel Deployment
 
@@ -45,7 +66,8 @@ The `webapp/` directory can be used as a Vercel project root.
 - `vercel.json` builds the Vite frontend from `frontend/` and rewrites `/api/*` to the FastAPI function.
 - In-process scheduling is disabled by default when `VERCEL=1`.
 - Vercel Cron calls `GET /api/catalog/refresh/cron` daily to refresh cached supermarket data.
-- Set a durable hosted PostgreSQL `DATABASE_URL`; serverless SQLite is not durable.
+- Without `DATABASE_URL`, Vercel uses ephemeral SQLite in `/tmp` so the app can boot out of the box.
+- Set a durable hosted PostgreSQL `DATABASE_URL` for production data; serverless SQLite is not durable.
 - If `CATALOG_REFRESH_TOKEN` or `CRON_SECRET` is set, the cron route requires `Authorization: Bearer <token>`.
 
 ## Test Mode

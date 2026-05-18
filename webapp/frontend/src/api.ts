@@ -3,6 +3,7 @@ import type {
   AuthPayload,
   CatalogStatus,
   ChainInfo,
+  GenericProductGroupDetail,
   MessageResponse,
   ProductDetail,
   ProductSearchResult,
@@ -18,6 +19,49 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
   withCredentials: true,
 });
+
+const apiDebug = import.meta.env.VITE_API_DEBUG === '1' || import.meta.env.VITE_API_DEBUG === 'true';
+
+if (apiDebug) {
+  api.interceptors.request.use((config) => {
+    const startedAt = performance.now();
+    config.headers.set('X-Debug-Client', 'webapp');
+    (config as typeof config & { metadata?: { startedAt: number } }).metadata = { startedAt };
+    console.debug('[api] request', {
+      method: config.method,
+      url: config.url,
+      params: config.params,
+      data: config.data,
+    });
+    return config;
+  });
+
+  api.interceptors.response.use(
+    (response) => {
+      const metadata = (response.config as typeof response.config & { metadata?: { startedAt: number } }).metadata;
+      console.debug('[api] response', {
+        method: response.config.method,
+        url: response.config.url,
+        status: response.status,
+        durationMs: metadata ? Math.round(performance.now() - metadata.startedAt) : undefined,
+        data: response.data,
+      });
+      return response;
+    },
+    (error) => {
+      const config = error.config ?? {};
+      const metadata = (config as typeof config & { metadata?: { startedAt: number } }).metadata;
+      console.debug('[api] error', {
+        method: config.method,
+        url: config.url,
+        status: error.response?.status,
+        durationMs: metadata ? Math.round(performance.now() - metadata.startedAt) : undefined,
+        data: error.response?.data,
+      });
+      return Promise.reject(error);
+    },
+  );
+}
 
 export function isApiError(error: unknown): error is { response?: { data?: { detail?: string } } } {
   return typeof error === 'object' && error !== null;
@@ -80,6 +124,11 @@ export async function searchProducts(
 
 export async function getProductDetail(productId: number): Promise<ProductDetail> {
   const response = await api.get<ProductDetail>(`/products/${productId}`);
+  return response.data;
+}
+
+export async function getGenericGroupDetail(groupKey: string): Promise<GenericProductGroupDetail> {
+  const response = await api.get<GenericProductGroupDetail>(`/generic-groups/${encodeURIComponent(groupKey)}`);
   return response.data;
 }
 
@@ -160,5 +209,15 @@ export async function getCatalogStatus(): Promise<CatalogStatus> {
 
 export async function triggerCatalogRefresh(): Promise<RefreshTriggerResult> {
   const response = await api.post<RefreshTriggerResult>('/catalog/refresh');
+  return response.data;
+}
+
+export async function triggerCatalogPriceRefresh(): Promise<RefreshTriggerResult> {
+  const response = await api.post<RefreshTriggerResult>('/catalog/refresh/prices');
+  return response.data;
+}
+
+export async function triggerCatalogDealsRefresh(): Promise<RefreshTriggerResult> {
+  const response = await api.post<RefreshTriggerResult>('/catalog/refresh/deals');
   return response.data;
 }

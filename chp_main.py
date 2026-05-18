@@ -5,7 +5,7 @@ chp_main.py
 Standalone CLI for the chp.co.il scraper.
 
 chp.co.il is an Israeli price-comparison aggregator. This tool searches
-for products by name or barcode and reports all online-store prices.
+for products by name or barcode and reports parsed comparison-table prices.
 
 Usage
 -----
@@ -128,6 +128,32 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Concurrent compare_results requests (default: 1; keep at 1 — parallel requests trigger server bot-detection)",
     )
+    row_scope = p.add_mutually_exclusive_group()
+    row_scope.add_argument(
+        "--online-only",
+        action="store_false",
+        dest="include_physical",
+        help="Return only online-store rows (exclude nearby physical branches)",
+    )
+    row_scope.add_argument(
+        "--include-physical",
+        action="store_true",
+        dest="include_physical",
+        help="Include nearby physical branch prices as well as online-store prices (default)",
+    )
+    p.set_defaults(include_physical=True)
+    p.add_argument(
+        "--no-compare-row-details",
+        action="store_false",
+        dest="include_compare_row_details",
+        help="Do not include compare_row_details_by_product in the JSON payload",
+    )
+    p.add_argument(
+        "--include-compare-html",
+        action="store_true",
+        help="Include raw compare HTML per product inside compare_row_details_by_product",
+    )
+    p.set_defaults(include_compare_row_details=True)
 
     # Output
     p.add_argument(
@@ -183,7 +209,7 @@ def _print_summary(result: dict) -> None:
     n_products = len(result["products_by_store"])  # key is product_id in chp
     print(f"  Unique products : {n_products}")
     print(f"  Price records   : {result['products_total']}")
-    print(f"  Online stores   : {result['stores_scraped']}")
+    print(f"  Stores seen     : {result['stores_scraped']}")
     print(f"  Duration        : {result['duration_seconds']:.1f}s")
     if result["errors"]:
         print(f"  Errors          : {len(result['errors'])}")
@@ -264,6 +290,9 @@ async def async_main(args: argparse.Namespace, parser: argparse.ArgumentParser) 
         max_products=args.max_products,
         max_concurrent=args.max_concurrent,
         browse_all=browse_all,
+        include_physical=args.include_physical,
+        include_compare_row_details=args.include_compare_row_details,
+        include_compare_html=args.include_compare_html,
     )
 
     # Output

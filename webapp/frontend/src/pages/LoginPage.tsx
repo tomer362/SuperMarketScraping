@@ -88,7 +88,7 @@ export default function LoginPage() {
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
                 className="min-h-13 w-full rounded-[22px] border border-slate-200 bg-slate-50 px-4 text-base outline-none transition focus:border-sky-300 focus:bg-white"
-                placeholder="letters_numbers_only"
+                placeholder="שם משתמש"
                 dir="ltr"
                 required
               />

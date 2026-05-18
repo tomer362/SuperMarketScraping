@@ -239,7 +239,11 @@ async def _fetch_page(
 
     try:
         return await with_retry(
-            _do, max_retries=max_retries, base_delay=base_delay, label=label
+            _do,
+            max_retries=max_retries,
+            base_delay=base_delay,
+            attempt_timeout=25.0,
+            label=label,
         )
     except Exception as exc:
         logger.error("Failed %s: %s", label or url, exc)
@@ -584,8 +588,9 @@ async def _fetch_branch_products(
 async def scrape(
     branches: Optional[List[Branch]] = None,
     flt: Optional[ScrapeFilter] = None,
-    batch_size: int = 100,
+    batch_size: int = 300,
     max_concurrent: int = 15,
+    branch_concurrent: int = 4,
     max_retries: int = 3,
     base_retry_delay: float = 1.0,
 ) -> ScrapeResult:
@@ -605,9 +610,7 @@ async def scrape(
 
     connector = aiohttp.TCPConnector(ssl=make_ssl_context())
     async with aiohttp.ClientSession(connector=connector) as session:
-        products_by_store: Dict[str, List[UnifiedProduct]] = {}
-
-        for branch in branches:
+        async def _scrape_one_branch(branch: Branch) -> tuple[str, List[UnifiedProduct], Optional[str]]:
             try:
                 raw_products = await _fetch_branch_products(
                     session,
@@ -621,9 +624,7 @@ async def scrape(
             except Exception as exc:
                 msg = f"branch={branch['id']} fetch failed: {exc}"
                 logger.error(msg)
-                errors.append(msg)
-                products_by_store[str(branch["id"])] = []
-                continue
+                return str(branch["id"]), [], msg
 
             # Map raw → UnifiedProduct, apply post-filters, deduplicate
             products: List[UnifiedProduct] = []
@@ -650,7 +651,21 @@ async def scrape(
                 branch.get("name", ""),
                 len(products),
             )
-            products_by_store[str(branch["id"])] = products
+            return str(branch["id"]), products, None
+
+        products_by_store: Dict[str, List[UnifiedProduct]] = {}
+        task_fns = [lambda branch=branch: _scrape_one_branch(branch) for branch in branches]
+        results = await run_concurrently(task_fns, max_concurrent=branch_concurrent)
+        for result in results:
+            if isinstance(result, Exception):
+                msg = f"branch task failed: {result}"
+                logger.error(msg)
+                errors.append(msg)
+                continue
+            branch_id, products, error = result
+            if error:
+                errors.append(error)
+            products_by_store[branch_id] = products
 
     duration = time.monotonic() - t0
     total = sum(len(v) for v in products_by_store.values())

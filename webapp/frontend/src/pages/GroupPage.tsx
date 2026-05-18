@@ -3,8 +3,8 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getGenericGroupDetail } from '../api';
 import ListPickerDialog from '../components/ListPickerDialog';
+import ProductImage from '../components/ProductImage';
 import { formatComparisonUnit, formatCurrency } from '../lib/format';
-import { displayableImageUrl } from '../lib/images';
 
 function routeGroupKey(value: string | undefined): string {
   if (!value) {
@@ -41,8 +41,6 @@ export default function GroupPage() {
   const requestedQuantity = Number(searchParams.get('qty') ?? 1);
   const requestedDimension = searchParams.get('dim');
   const defaultQuantity = Number.isFinite(requestedQuantity) && requestedQuantity > 0 ? requestedQuantity : 1;
-  const imageUrl = displayableImageUrl(group.offers[0]?.image_url);
-
   return (
     <>
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.1fr)_20rem]">
@@ -50,11 +48,11 @@ export default function GroupPage() {
           <div className="rounded-[34px] border border-white/80 bg-white/95 p-5 shadow-[0_20px_60px_-36px_rgba(15,23,42,0.35)] sm:p-6">
             <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
               <div className="flex gap-4">
-                {imageUrl && (
-                  <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-[26px] bg-emerald-50">
-                    <img src={imageUrl} alt={group.label} className="h-full w-full object-contain" />
-                  </div>
-                )}
+                <ProductImage
+                  imageUrl={group.offers[0]?.image_url}
+                  alt={group.label}
+                  frameClassName="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-[26px] bg-emerald-50"
+                />
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-700">
                     Comparable group

@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { compareList, deleteList, deleteListItem, getList, renameList, updateListItem } from '../api';
+import ProductImage from '../components/ProductImage';
 import { formatCurrency, formatQuantity } from '../lib/format';
-import { displayableImageUrl } from '../lib/images';
 import type { ShoppingListItem } from '../types';
 
 function quantityStep(isWeighable: boolean): number {
@@ -159,16 +159,14 @@ export default function ListDetailPage() {
                     const min = quantityMin(isWeighable);
                     const unitLabel = quantityUnitLabel(isWeighable, item.product?.unit_dimension);
                     const name = listItemName(item);
-                    const imageUrl = displayableImageUrl(item.product?.image_url);
-
                     return (
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex min-w-0 gap-4">
-                      {imageUrl && (
-                        <div className="flex h-18 w-18 shrink-0 items-center justify-center overflow-hidden rounded-[22px] bg-slate-100">
-                          <img src={imageUrl} alt={name} className="h-full w-full object-contain" />
-                        </div>
-                      )}
+                      <ProductImage
+                        imageUrl={item.product?.image_url}
+                        alt={name}
+                        frameClassName="flex h-18 w-18 shrink-0 items-center justify-center overflow-hidden rounded-[22px] bg-slate-100"
+                      />
                       <div className="min-w-0">
                         <p className="line-clamp-2 text-base font-black text-slate-900">{name}</p>
                         <p className="mt-1 text-sm text-slate-500">

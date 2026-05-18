@@ -183,7 +183,11 @@ async def _fetch_catalog_page(
 
     try:
         return await with_retry(
-            _do, max_retries=max_retries, base_delay=base_delay, label=label
+            _do,
+            max_retries=max_retries,
+            base_delay=base_delay,
+            attempt_timeout=25.0,
+            label=label,
         )
     except Exception as exc:
         logger.error("Failed catalog page %s: %s", label, exc)
@@ -231,7 +235,11 @@ async def _fetch_search_page(
 
     try:
         return await with_retry(
-            _do, max_retries=max_retries, base_delay=base_delay, label=label
+            _do,
+            max_retries=max_retries,
+            base_delay=base_delay,
+            attempt_timeout=25.0,
+            label=label,
         )
     except Exception as exc:
         logger.error("Failed search page %s: %s", label, exc)
@@ -602,6 +610,18 @@ async def update_stores() -> List[Store]:
 update_branches = update_stores
 
 
+def _merge_stores(live_stores: List[Store], fallback_stores: List[Store]) -> List[Store]:
+    merged: List[Store] = []
+    seen: set[int] = set()
+    for store in [*live_stores, *fallback_stores]:
+        store_id = int(store["id"])
+        if store_id in seen:
+            continue
+        seen.add(store_id)
+        merged.append(store)
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -610,8 +630,9 @@ update_branches = update_stores
 async def scrape(
     stores: Optional[List[Store]] = None,
     flt: Optional[ScrapeFilter] = None,
-    batch_size: int = 100,
+    batch_size: int = 300,
     max_concurrent: int = 15,
+    store_concurrent: int = 6,
     max_retries: int = 3,
     base_retry_delay: float = 1.0,
 ) -> ScrapeResult:
@@ -628,8 +649,6 @@ async def scrape(
     Returns:
         ScrapeResult with products_by_store keyed by str(internet_store_id).
     """
-    if stores is None:
-        stores = ONLINE_STORES
     if flt is None:
         flt = {}
 
@@ -639,9 +658,20 @@ async def scrape(
 
     connector = aiohttp.TCPConnector(ssl=make_ssl_context())
     async with aiohttp.ClientSession(connector=connector) as session:
-        products_by_store: Dict[str, List[UnifiedProduct]] = {}
-
-        for store in stores:
+        if stores is None:
+            live_stores = await update_stores()
+            if live_stores:
+                stores = _merge_stores(live_stores, ONLINE_STORES)
+                logger.info(
+                    "ramilevi: using %d live/static merged store(s)", len(stores)
+                )
+            else:
+                stores = ONLINE_STORES
+                logger.warning(
+                    "ramilevi: live store discovery failed; falling back to %d static store(s)",
+                    len(stores),
+                )
+        async def _scrape_one_store(store: Store) -> tuple[str, List[UnifiedProduct], Optional[str]]:
             try:
                 prods = await _scrape_store(
                     session,
@@ -653,12 +683,25 @@ async def scrape(
                     base_retry_delay,
                     scraped_at,
                 )
-                products_by_store[str(store["id"])] = prods
+                return str(store["id"]), prods, None
             except Exception as exc:
                 msg = f"store={store['id']} failed: {exc}"
                 logger.error(msg)
+                return str(store["id"]), [], msg
+
+        products_by_store: Dict[str, List[UnifiedProduct]] = {}
+        task_fns = [lambda store=store: _scrape_one_store(store) for store in stores]
+        results = await run_concurrently(task_fns, max_concurrent=store_concurrent)
+        for result in results:
+            if isinstance(result, Exception):
+                msg = f"store task failed: {result}"
+                logger.error(msg)
                 errors.append(msg)
-                products_by_store[str(store["id"])] = []
+                continue
+            store_id, products, error = result
+            if error:
+                errors.append(error)
+            products_by_store[store_id] = products
 
     duration = time.monotonic() - t0
     total = sum(len(v) for v in products_by_store.values())

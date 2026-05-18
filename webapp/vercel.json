@@ -7,7 +7,8 @@
     { "source": "/(.*)", "destination": "/index.html" }
   ],
   "crons": [
-    { "path": "/api/catalog/refresh/cron", "schedule": "0 2 * * *" }
+    { "path": "/api/catalog/refresh/prices/cron", "schedule": "0 2 * * *" },
+    { "path": "/api/catalog/refresh/deals/cron", "schedule": "30 2 * * *" }
   ],
   "functions": {
     "api/index.py": {

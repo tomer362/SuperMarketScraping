@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import AsyncGenerator
 
+from sqlalchemy import event
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
@@ -33,6 +34,16 @@ else:
     engine_options["max_overflow"] = 10
 
 engine: AsyncEngine = create_async_engine(database_url, **engine_options)
+
+if database_backend == "sqlite":
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:  # type: ignore[no-untyped-def]
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.close()
+
 async_session_factory = async_sessionmaker(
     engine, expire_on_commit=False, class_=AsyncSession
 )
@@ -53,6 +64,25 @@ async def create_tables(*, drop_existing: bool = False) -> None:
         if drop_existing:
             await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+
+        if not drop_existing:
+            if database_backend == "sqlite":
+                columns = (await conn.execute(text("PRAGMA table_info(catalog_refresh_runs)"))).mappings().all()
+                column_names = {column["name"] for column in columns}
+                if "refresh_kind" not in column_names:
+                    await conn.execute(
+                        text(
+                            "ALTER TABLE catalog_refresh_runs "
+                            "ADD COLUMN refresh_kind VARCHAR(16) NOT NULL DEFAULT 'prices'"
+                        )
+                    )
+            elif database_backend == "postgresql":
+                await conn.execute(
+                    text(
+                        "ALTER TABLE catalog_refresh_runs "
+                        "ADD COLUMN IF NOT EXISTS refresh_kind VARCHAR(16) NOT NULL DEFAULT 'prices'"
+                    )
+                )
 
         if database_backend == "postgresql":
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))

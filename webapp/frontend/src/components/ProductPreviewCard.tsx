@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import type { ProductPreview } from '../types';
 import { formatCurrency } from '../lib/format';
-import { displayableImageUrl } from '../lib/images';
+import ProductImage from './ProductImage';
 
 export default function ProductPreviewCard({
   product,
@@ -10,18 +10,16 @@ export default function ProductPreviewCard({
   product: ProductPreview;
   detailParams?: string;
 }) {
-  const imageUrl = displayableImageUrl(product.image_url);
-
   return (
     <Link
       to={`/products/${product.id}${detailParams}`}
       className="group flex min-h-32 gap-4 rounded-[28px] border border-white/80 bg-white/90 p-4 shadow-[0_18px_45px_-28px_rgba(15,23,42,0.25)] transition hover:-translate-y-0.5 hover:shadow-[0_26px_60px_-28px_rgba(14,165,233,0.35)]"
     >
-      {imageUrl && (
-        <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[22px] bg-slate-100">
-          <img src={imageUrl} alt={product.name} className="h-full w-full object-contain" />
-        </div>
-      )}
+      <ProductImage
+        imageUrl={product.image_url}
+        alt={product.name}
+        frameClassName="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[22px] bg-slate-100"
+      />
 
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-start justify-between gap-3">

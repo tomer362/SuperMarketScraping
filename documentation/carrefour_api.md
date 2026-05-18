@@ -2,7 +2,7 @@
 
 > Platform: **Stor.ai** — Retailer ID `1540`
 > Base URL: `https://www.carrefour.co.il`
-> Research date: 2026-03
+> Research date: 2026-03 (updated 2026-05-16)
 
 ---
 
@@ -17,7 +17,7 @@ Carrefour Israel's online store runs on the **Stor.ai** SaaS platform — the **
 ### 1. Branch List
 
 ```
-GET /v2/retailers/1540/branches?appId=4&languageId=1
+GET /v2/retailers/1540/branches?appId=2&languageId=1
 ```
 
 **Response shape:**
@@ -63,6 +63,11 @@ GET /v2/retailers/1540/branches?appId=4&languageId=1
 | 3458 | עפולה             | עפולה             |
 | 3466 | באר שבע           | באר שבע           |
 | 3476 | דליית אל כרמל    | דליית אל כרמל    |
+
+Coverage update (2026-05-16):
+- Branch roster can drift from static lists.
+- Scraper default flow now uses live branch discovery (`/branches`) when no
+  explicit branch list is provided.
 
 ---
 

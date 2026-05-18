@@ -34,6 +34,12 @@ def _normalize_database_url(value: str) -> str:
     return value
 
 
+def _default_database_url(*, is_vercel: bool) -> str:
+    if is_vercel:
+        return "sqlite+aiosqlite:////tmp/supermarket.sqlite3"
+    return "postgresql+asyncpg://postgres:postgres@localhost:5432/supermarket"
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str
@@ -41,6 +47,8 @@ class Settings:
     port: int
     secret_key: str
     scrape_interval_hours: float
+    price_refresh_interval_hours: float
+    deals_refresh_interval_hours: float
     enable_scheduler: bool
     auto_refresh_on_start: bool
     session_cookie_name: str
@@ -51,6 +59,8 @@ class Settings:
     is_vercel: bool
     seed_test_data: bool
     reset_test_db_on_start: bool
+    log_level: str
+    catalog_debug: bool
 
 
 @lru_cache(maxsize=1)
@@ -60,13 +70,20 @@ def get_settings() -> Settings:
         database_url=_normalize_database_url(
             os.environ.get(
                 "DATABASE_URL",
-                "postgresql+asyncpg://postgres:postgres@localhost:5432/supermarket",
+                _default_database_url(is_vercel=is_vercel),
             )
         ),
         host=os.environ.get("HOST", "0.0.0.0"),
         port=int(os.environ.get("PORT", "8000")),
         secret_key=os.environ.get("SECRET_KEY") or secrets.token_urlsafe(32),
-        scrape_interval_hours=float(os.environ.get("SCRAPE_INTERVAL_HOURS", "6")),
+        scrape_interval_hours=float(os.environ.get("SCRAPE_INTERVAL_HOURS", "24")),
+        price_refresh_interval_hours=float(
+            os.environ.get(
+                "PRICE_REFRESH_INTERVAL_HOURS",
+                os.environ.get("SCRAPE_INTERVAL_HOURS", "24"),
+            )
+        ),
+        deals_refresh_interval_hours=float(os.environ.get("DEALS_REFRESH_INTERVAL_HOURS", "4")),
         enable_scheduler=_get_bool("ENABLE_SCHEDULER", not is_vercel),
         auto_refresh_on_start=_get_bool("AUTO_REFRESH_ON_START", not is_vercel),
         session_cookie_name=os.environ.get(
@@ -90,6 +107,8 @@ def get_settings() -> Settings:
         is_vercel=is_vercel,
         seed_test_data=_get_bool("SEED_TEST_DATA", False),
         reset_test_db_on_start=_get_bool("RESET_TEST_DB_ON_START", False),
+        log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        catalog_debug=_get_bool("CATALOG_DEBUG", False),
     )
 
 

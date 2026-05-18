@@ -2361,6 +2361,261 @@ class TestChpCityInfo(unittest.TestCase):
         self.assertEqual(city.street_id, "9000")
 
 
+class TestChpEndpointFlow(unittest.TestCase):
+    """Tests for low-level three-step CHP endpoint helpers."""
+
+    def test_fetch_shopping_address_page_parses_matches(self):
+        from scrapers.chp.chp import fetch_shopping_address_page
+
+        payload = [
+            {"value": "תל אביב", "label": "תל אביב", "id": "5000_9000"},
+            {"value": "תל מונד", "label": "תל מונד", "id": "1540_9000"},
+        ]
+        with patch("scrapers.chp.chp.with_retry", new=AsyncMock(return_value=payload)):
+            page = _run(fetch_shopping_address_page(MagicMock(), "תל", 0.123))
+
+        self.assertEqual(page.term, "תל")
+        self.assertEqual(page.from_offset, 0)
+        self.assertEqual(len(page.raw_items), 2)
+        self.assertEqual(len(page.matches), 2)
+        self.assertEqual(page.matches[0].city_id, "5000")
+
+    def test_fetch_shopping_address_page_rejects_non_list_payload(self):
+        from scrapers.chp.chp import fetch_shopping_address_page
+
+        with patch(
+            "scrapers.chp.chp.with_retry", new=AsyncMock(return_value={"bad": 1})
+        ):
+            with self.assertRaises(ValueError):
+                _run(fetch_shopping_address_page(MagicMock(), "תל", 0.123))
+
+    def test_fetch_product_autocomplete_page_tracks_sentinels(self):
+        from scrapers.chp.chp import fetch_product_autocomplete_page
+
+        payload = [
+            {"id": "prev", "value": 0, "label": "prev", "parts": ""},
+            {
+                "id": "temp_123",
+                "value": "מוצר",
+                "label": "מוצר",
+                "parts": {
+                    "name_and_contents": "מוצר",
+                    "manufacturer_and_barcode": "",
+                    "pack_size": "",
+                    "small_image": "",
+                    "chainnames": "",
+                    "price_range": "",
+                },
+            },
+            {"id": "next", "value": 0, "label": "next", "parts": ""},
+        ]
+
+        with patch("scrapers.chp.chp.with_retry", new=AsyncMock(return_value=payload)):
+            page = _run(
+                fetch_product_autocomplete_page(
+                    MagicMock(),
+                    "יוגורט עזים",
+                    None,
+                    0.222,
+                    from_offset=10,
+                )
+            )
+
+        self.assertEqual(page.term, "יוגורט עזים")
+        self.assertEqual(page.from_offset, 10)
+        self.assertEqual(len(page.raw_items), 3)
+        self.assertEqual(len(page.real_items), 1)
+        self.assertTrue(page.has_prev)
+        self.assertTrue(page.has_next)
+        self.assertEqual(page.real_items[0]["id"], "temp_123")
+
+    def test_iter_product_autocomplete_pages_stops_when_no_new_ids(self):
+        from scrapers.chp.chp import ProductAutocompletePage, iter_product_autocomplete_pages
+
+        first_page = ProductAutocompletePage(
+            term="יוגורט",
+            from_offset=0,
+            raw_items=[{"id": "temp_1"}],
+            real_items=[{"id": "temp_1"}],
+            has_prev=False,
+            has_next=True,
+        )
+        second_page = ProductAutocompletePage(
+            term="יוגורט",
+            from_offset=10,
+            raw_items=[{"id": "temp_1"}],
+            real_items=[{"id": "temp_1"}],
+            has_prev=True,
+            has_next=True,
+        )
+
+        mocked_fetch = AsyncMock(side_effect=[first_page, second_page])
+
+        async def _collect():
+            pages = []
+            async for page in iter_product_autocomplete_pages(
+                MagicMock(),
+                "יוגורט",
+                None,
+                0.333,
+            ):
+                pages.append(page)
+            return pages
+
+        with patch(
+            "scrapers.chp.chp.fetch_product_autocomplete_page", new=mocked_fetch
+        ):
+            pages = _run(_collect())
+
+        self.assertEqual(len(pages), 2)
+        self.assertEqual(mocked_fetch.await_count, 2)
+        self.assertEqual(pages[0].from_offset, 0)
+        self.assertEqual(pages[1].from_offset, 10)
+
+    def test_compare_results_url_includes_from_and_num_results(self):
+        from scrapers.chp.chp import CityInfo, _build_compare_results_url
+
+        city = CityInfo(label="תל אביב", city_id="5000", street_id="9000")
+        url = _build_compare_results_url(
+            city,
+            product_name_or_barcode="בייקון",
+            product_barcode="7290873255550_72901812333",
+            from_offset=30,
+            num_results=7,
+        )
+
+        self.assertIn("shopping_address_city_id=5000", url)
+        self.assertIn("shopping_address_street_id=9000", url)
+        self.assertIn("product_barcode=7290873255550_72901812333", url)
+        self.assertIn("from=30", url)
+        self.assertIn("num_results=7", url)
+
+    def test_fetch_compare_results_page_validates_input_bounds(self):
+        from scrapers.chp.chp import CityInfo, fetch_compare_results_page
+
+        city = CityInfo(label="תל אביב", city_id="5000", street_id="9000")
+
+        with self.assertRaises(ValueError):
+            _run(
+                fetch_compare_results_page(
+                    MagicMock(),
+                    city=city,
+                    product_name_or_barcode="temp_1",
+                    from_offset=-1,
+                )
+            )
+
+    def test_build_compare_result_details_includes_store_price_and_deal(self):
+        from scrapers.chp.chp import (
+            ChpProduct,
+            OnlineStorePrice,
+            build_compare_result_details,
+        )
+
+        prod = ChpProduct(
+            {
+                "value": "חלב תנובה טרי 3% בקרטון, 1 ליטר",
+                "label": "חלב תנובה טרי 3% בקרטון, 1 ליטר",
+                "id": "7290027600007_7290004131074",
+                "parts": {
+                    "name_and_contents": "חלב תנובה טרי 3% בקרטון, 1 ליטר",
+                    "manufacturer_and_barcode": "יצרן/מותג: תנובה, ברקוד: 7290004131074",
+                    "pack_size": "",
+                    "small_image": "",
+                    "chainnames": "",
+                },
+            }
+        )
+        sp = OnlineStorePrice(
+            chain_name="שופרסל",
+            store_name="שופרסל אונליין",
+            website="https://www.shufersal.co.il",
+            deal_text="2 ב-12.00",
+            deal_price_text="6.00 *",
+            price=7.20,
+            store_url="https://www.shufersal.co.il/online/he",
+            is_online=True,
+        )
+
+        phys, online = build_compare_result_details(
+            physical_rows=[],
+            online_rows=[sp],
+            product=prod,
+            scraped_at="2026-05-12T00:00:00+00:00",
+        )
+
+        self.assertEqual(phys, [])
+        self.assertEqual(len(online), 1)
+        row = online[0]
+        self.assertEqual(row["store"]["store_type"], "online")
+        self.assertIn("shufersal.co.il", row["store"]["store_id"])
+        self.assertAlmostEqual(row["pricing"]["price"], 7.20)
+        self.assertIsNotNone(row["deal"])
+        self.assertEqual(row["deal"]["deal_type"], "multi_buy")
+
+    def test_compare_results_result_exposes_row_details(self):
+        from scrapers.chp.chp import (
+            ChpProduct,
+            CityInfo,
+            fetch_compare_results_page,
+        )
+
+        city = CityInfo(label="תל אביב", city_id="5000", street_id="9000")
+        product = ChpProduct(
+            {
+                "id": "temp_7290004131074",
+                "value": "חלב תנובה טרי 3% בקרטון, 1 ליטר",
+                "label": "חלב תנובה טרי 3% בקרטון, 1 ליטר",
+                "parts": {
+                    "name_and_contents": "חלב תנובה טרי 3% בקרטון, 1 ליטר",
+                    "manufacturer_and_barcode": "יצרן/מותג: תנובה, ברקוד: 7290004131074",
+                    "pack_size": "",
+                    "small_image": "",
+                    "chainnames": "",
+                },
+            }
+        )
+
+        html = """
+        <input id="displayed_product_code" value="temp_7290004131074" />
+        <input id="displayed_product_name_and_contents" value="חלב תנובה טרי 3% בקרטון, 1 ליטר" />
+        <table class="table results-table"><tbody>
+          <tr><td>אושר עד</td><td>תל אביב</td><td class="dont_display_when_narrow">רחוב 1</td><td>&nbsp;</td><td>6.80</td></tr>
+        </tbody></table>
+        <table class="table results-table"><tbody>
+          <tr><td>שופרסל</td><td><a href="https://www.shufersal.co.il">שופרסל אונליין</a></td><td>https://www.shufersal.co.il</td><td>&nbsp;</td><td>7.20</td></tr>
+        </tbody></table>
+        """
+
+        with patch("scrapers.chp.chp.with_retry", new=AsyncMock(return_value=html)):
+            result = _run(
+                fetch_compare_results_page(
+                    MagicMock(),
+                    city=city,
+                    product_name_or_barcode=product.product_id,
+                    product=product,
+                    header_mode="xhr",
+                )
+            )
+
+        self.assertEqual(len(result.physical_rows), 1)
+        self.assertEqual(len(result.online_rows), 1)
+        self.assertEqual(len(result.physical_row_details), 1)
+        self.assertEqual(len(result.online_row_details), 1)
+        self.assertEqual(result.physical_row_details[0]["store"]["store_type"], "physical")
+        self.assertEqual(result.online_row_details[0]["store"]["store_type"], "online")
+
+        with self.assertRaises(ValueError):
+            _run(
+                fetch_compare_results_page(
+                    MagicMock(),
+                    city=city,
+                    product_name_or_barcode="temp_1",
+                    num_results=0,
+                )
+            )
+
+
 class TestChpProduct(unittest.TestCase):
     """Tests for ChpProduct parsing from autocomplete JSON."""
 
@@ -2522,6 +2777,49 @@ class TestChpParseCompareResults(unittest.TestCase):
         self.assertEqual(len(phys), 1)
         self.assertAlmostEqual(phys[0].price, 8.50)
         self.assertEqual(phys[0].chain_name, "אושר עד")
+        self.assertEqual(phys[0].address, "הנס מולר 6, קרית ביאליק")
+        self.assertFalse(phys[0].is_online)
+
+    def test_hydrates_sitemap_product_from_compare_header(self):
+        """Sitemap IDs should gain product details from compare_results HTML."""
+        from scrapers.chp.chp import ChpProduct
+
+        product = ChpProduct(
+            {
+                "id": "7290027600007_16000423534",
+                "value": "7290027600007_16000423534",
+                "label": "7290027600007_16000423534",
+                "parts": {},
+            }
+        )
+        html = self._make_html(
+            online_rows="""
+            <tr>
+              <td>רמי לוי באינטרנט</td>
+              <td><a href="https://rami-levy.co.il">רמי לוי באינטרנט</a></td>
+              <td>https://rami-levy.co.il</td>
+              <td>&nbsp;</td><td>10.00</td>
+            </tr>
+            """
+        )
+        html = (
+            '<input type="hidden" id="displayed_product_code" '
+            'value="7290027600007_16000423534">'
+            '<input type="hidden" id="displayed_product_name_and_contents" '
+            'value="חטיף שיבולת שועל עם שוקולד מריר, חמישיה 5 * 42 גרם">'
+            '<table><tr><td><h3>חטיף שיבולת שועל עם שוקולד מריר, חמישיה 5 * 42 גרם '
+            '(יצרן/מותג: נייצר ואלי, ברקוד: 16000423534)</h3></td></tr></table>'
+            + html
+        )
+        _phys, online = self.parse(html, product)
+        self.assertEqual(len(online), 1)
+        self.assertEqual(
+            product.name_and_contents,
+            "חטיף שיבולת שועל עם שוקולד מריר, חמישיה 5 * 42 גרם",
+        )
+        self.assertEqual(product.barcode, "16000423534")
+        self.assertEqual(product.brand, "נייצר ואלי")
+        self.assertEqual(product._unit_dimension, "mass")
 
     def test_skips_display_when_narrow_rows(self):
         """Address-only rows (display_when_narrow) must not be parsed as products."""

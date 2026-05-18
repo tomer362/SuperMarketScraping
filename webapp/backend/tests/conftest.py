@@ -16,6 +16,8 @@ if str(BACKEND_DIR) not in sys.path:
 os.environ.setdefault('DATABASE_URL', 'sqlite+aiosqlite:///./webapp_test.sqlite3')
 os.environ.setdefault('ENABLE_SCHEDULER', '0')
 os.environ.setdefault('AUTO_REFRESH_ON_START', '0')
+os.environ.setdefault('PRICE_REFRESH_INTERVAL_HOURS', '24')
+os.environ.setdefault('DEALS_REFRESH_INTERVAL_HOURS', '4')
 os.environ.setdefault('SEED_TEST_DATA', '1')
 os.environ.setdefault('RESET_TEST_DB_ON_START', '1')
 os.environ.setdefault('SESSION_COOKIE_SECURE', '0')

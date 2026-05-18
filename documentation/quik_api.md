@@ -2,7 +2,7 @@
 
 > Platform: **ZuZ** (AngularJS) — Retailer ID `1541`
 > Base URL: `https://www.quik.co.il`
-> Research date: 2026-03
+> Research date: 2026-03 (updated 2026-05-16)
 
 ---
 
@@ -11,6 +11,11 @@
 Quik's online store runs on the **ZuZ** platform with the `appId=4` per-branch/per-category endpoint pattern — identical in structure to Keshet Teamim, Victory, and Yenot Bitan.
 
 The global `/v2/retailers/1541/products` endpoint (appId=2) is **capped** and misses many products.  The per-branch/per-category approach avoids the cap entirely.
+
+Coverage update (2026-05-16):
+- Live branch audit shows branch-list drift over time.
+- Scraper default flow now uses live branch discovery (`/branches`) when no
+  explicit branch list is provided.
 
 ---
 

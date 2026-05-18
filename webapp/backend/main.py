@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
@@ -25,6 +26,7 @@ from catalog_service import (
     get_user_list,
     get_user_list_with_items,
     get_user_lists,
+    load_generic_group_detail,
     latest_refresh_run,
     load_product_chain_offers,
     load_product_detail,
@@ -42,6 +44,7 @@ from schemas import (
     CatalogStatusOut,
     ChainOfferOut,
     ChainOut,
+    GenericProductGroupDetailOut,
     LoginIn,
     MessageOut,
     ProductDetailOut,
@@ -58,7 +61,7 @@ from schemas import (
     SuggestResultOut,
     UserOut,
 )
-from scraper_runner import run_full_refresh
+from scraper_runner import run_deals_refresh, run_full_refresh
 from scheduler import RefreshScheduler
 from seed import seed_demo_catalog
 from settings import get_settings
@@ -67,11 +70,14 @@ from settings import get_settings
 settings = get_settings()
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG if settings.catalog_debug else getattr(logging, settings.log_level, logging.INFO),
     format="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("webapp")
+if settings.catalog_debug:
+    logging.getLogger("webapp").setLevel(logging.DEBUG)
+    logging.getLogger("webapp.catalog").setLevel(logging.DEBUG)
 
 
 def _parse_chain_filter(chains: str | None) -> list[str] | None:
@@ -83,9 +89,14 @@ def _parse_chain_filter(chains: str | None) -> list[str] | None:
     return requested
 
 
-async def _refresh_catalog(source: str) -> dict:
+async def _refresh_catalog(source: str, refresh_kind: str = "prices") -> dict:
     async with async_session_factory() as session:
-        result = await run_full_refresh(session, source=source)
+        if refresh_kind == "prices":
+            result = await run_full_refresh(session, source=source)
+        elif refresh_kind == "deals":
+            result = await run_deals_refresh(session, source=source)
+        else:
+            raise ValueError(f"Unsupported refresh kind: {refresh_kind}")
         await session.commit()
         return result
 
@@ -111,7 +122,11 @@ def _require_refresh_auth(authorization: str | None) -> None:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
 
-scheduler = RefreshScheduler(settings.scrape_interval_hours, _refresh_catalog)
+scheduler = RefreshScheduler(
+    settings.price_refresh_interval_hours,
+    settings.deals_refresh_interval_hours,
+    _refresh_catalog,
+)
 
 
 @asynccontextmanager
@@ -125,8 +140,12 @@ async def lifespan(_: FastAPI):
         await scheduler.start()
     if settings.auto_refresh_on_start and not settings.seed_test_data:
         async with async_session_factory() as session:
-            if not await catalog_is_fresh(session, settings.scrape_interval_hours):
-                await _refresh_catalog("startup")
+            if not await catalog_is_fresh(
+                session,
+                settings.price_refresh_interval_hours,
+                refresh_kind="prices",
+            ):
+                await _refresh_catalog("startup", "prices")
     try:
         yield
     finally:
@@ -149,6 +168,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    if not settings.catalog_debug:
+        return await call_next(request)
+
+    start = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    logger.debug(
+        "request method=%s path=%s query=%s status=%s duration_ms=%.1f",
+        request.method,
+        request.url.path,
+        request.url.query,
+        response.status_code,
+        elapsed_ms,
+    )
+    return response
 
 
 @app.post("/api/auth/register", response_model=AuthPayload, tags=["Auth"])
@@ -282,6 +320,22 @@ async def product_offers(
     if not offers:
         raise HTTPException(status_code=404, detail="Product not found")
     return [ChainOfferOut(**offer) for offer in offers]
+
+
+@app.get("/api/generic-groups/{group_key}", response_model=GenericProductGroupDetailOut, tags=["Products"])
+async def generic_group_detail(
+    group_key: str,
+    chains: str | None = Query(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> GenericProductGroupDetailOut:
+    detail = await load_generic_group_detail(
+        session,
+        group_key,
+        chain_filter=_parse_chain_filter(chains),
+    )
+    if not detail:
+        raise HTTPException(status_code=404, detail="Generic group not found")
+    return GenericProductGroupDetailOut(**detail)
 
 
 @app.get("/api/lists", response_model=list[ShoppingListSummaryOut], tags=["Lists"])
@@ -471,20 +525,62 @@ async def compare_list(
 async def catalog_status(session: AsyncSession = Depends(get_session)) -> CatalogStatusOut:
     last_refresh = await latest_refresh_run(session)
     last_successful_refresh = await latest_refresh_run(session, successful_only=True)
+    last_price_refresh = await latest_refresh_run(session, refresh_kind="prices")
+    last_successful_price_refresh = await latest_refresh_run(
+        session,
+        successful_only=True,
+        refresh_kind="prices",
+    )
+    last_deals_refresh = await latest_refresh_run(session, refresh_kind="deals")
+    last_successful_deals_refresh = await latest_refresh_run(
+        session,
+        successful_only=True,
+        refresh_kind="deals",
+    )
+    prices_fresh = await catalog_is_fresh(
+        session,
+        settings.price_refresh_interval_hours,
+        refresh_kind="prices",
+    )
+    deals_fresh = await catalog_is_fresh(
+        session,
+        settings.deals_refresh_interval_hours,
+        refresh_kind="deals",
+    )
     return CatalogStatusOut(
         scheduler_running=scheduler.is_running,
         refresh_in_progress=scheduler.refresh_in_progress,
-        interval_hours=settings.scrape_interval_hours,
-        catalog_fresh=await catalog_is_fresh(session, settings.scrape_interval_hours),
+        interval_hours=settings.price_refresh_interval_hours,
+        price_interval_hours=settings.price_refresh_interval_hours,
+        deals_interval_hours=settings.deals_refresh_interval_hours,
+        catalog_fresh=prices_fresh,
+        prices_fresh=prices_fresh,
+        deals_fresh=deals_fresh,
         last_refresh=serialize_refresh_run(last_refresh),
         last_successful_refresh=serialize_refresh_run(last_successful_refresh),
+        last_price_refresh=serialize_refresh_run(last_price_refresh),
+        last_successful_price_refresh=serialize_refresh_run(last_successful_price_refresh),
+        last_deals_refresh=serialize_refresh_run(last_deals_refresh),
+        last_successful_deals_refresh=serialize_refresh_run(last_successful_deals_refresh),
         chains=[ChainOut(**chain) for chain in await public_chain_statuses(session)],
     )
 
 
 @app.post("/api/catalog/refresh", response_model=RefreshTriggerOut, tags=["Catalog"])
 async def trigger_catalog_refresh() -> RefreshTriggerOut:
-    result = await scheduler.trigger_now("manual")
+    result = await scheduler.trigger_now("prices", "manual")
+    return RefreshTriggerOut(**result)
+
+
+@app.post("/api/catalog/refresh/prices", response_model=RefreshTriggerOut, tags=["Catalog"])
+async def trigger_catalog_prices_refresh() -> RefreshTriggerOut:
+    result = await scheduler.trigger_now("prices", "manual")
+    return RefreshTriggerOut(**result)
+
+
+@app.post("/api/catalog/refresh/deals", response_model=RefreshTriggerOut, tags=["Catalog"])
+async def trigger_catalog_deals_refresh() -> RefreshTriggerOut:
+    result = await scheduler.trigger_now("deals", "manual")
     return RefreshTriggerOut(**result)
 
 
@@ -493,7 +589,25 @@ async def trigger_catalog_refresh_cron(
     authorization: str | None = Header(default=None),
 ) -> RefreshTriggerOut:
     _require_refresh_auth(authorization)
-    result = await scheduler.trigger_now("vercel-cron")
+    result = await scheduler.trigger_now("prices", "vercel-cron")
+    return RefreshTriggerOut(**result)
+
+
+@app.get("/api/catalog/refresh/prices/cron", response_model=RefreshTriggerOut, tags=["Catalog"])
+async def trigger_catalog_prices_refresh_cron(
+    authorization: str | None = Header(default=None),
+) -> RefreshTriggerOut:
+    _require_refresh_auth(authorization)
+    result = await scheduler.trigger_now("prices", "vercel-cron")
+    return RefreshTriggerOut(**result)
+
+
+@app.get("/api/catalog/refresh/deals/cron", response_model=RefreshTriggerOut, tags=["Catalog"])
+async def trigger_catalog_deals_refresh_cron(
+    authorization: str | None = Header(default=None),
+) -> RefreshTriggerOut:
+    _require_refresh_auth(authorization)
+    result = await scheduler.trigger_now("deals", "vercel-cron")
     return RefreshTriggerOut(**result)
 
 

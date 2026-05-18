@@ -75,6 +75,7 @@ class CatalogRefreshRun(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="scheduler")
+    refresh_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="prices")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

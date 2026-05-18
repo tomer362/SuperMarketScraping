@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import ProductPreviewCard from '../components/ProductPreviewCard';
@@ -37,5 +37,38 @@ describe('ProductPreviewCard', () => {
     expect(screen.getByText('יש מבצע')).toBeInTheDocument();
     expect(screen.getByText('רמי לוי')).toBeInTheDocument();
     expect(screen.queryByText('🛒')).not.toBeInTheDocument();
+  });
+
+  it('hides broken product images after the browser reports a load error', () => {
+    renderWithQueryClient(
+      <MemoryRouter>
+        <ProductPreviewCard
+          product={{
+            id: 8,
+            name: 'חלב 13% ליטר',
+            brand: null,
+            manufacturer: null,
+            barcode: null,
+            image_url: 'https://example.com/dead-product-image.jpg',
+            unit_description: '1 ליטר',
+            unit_of_measure: 'ליטר',
+            unit_qty: 1,
+            unit_qty_si: 1,
+            unit_dimension: 'volume',
+            is_weighable: false,
+            cheapest_price: 5.9,
+            cheapest_chain: 'carrefour',
+            cheapest_chain_label: 'קרפור',
+            cheapest_store_name: 'קרפור תל אביב',
+            chain_count: 1,
+            has_deal: false,
+          }}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.error(screen.getByAltText('חלב 13% ליטר'));
+
+    expect(screen.queryByAltText('חלב 13% ליטר')).not.toBeInTheDocument();
   });
 });

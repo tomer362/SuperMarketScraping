@@ -462,7 +462,11 @@ async def _fetch_page(
 
     try:
         return await with_retry(
-            _do, max_retries=max_retries, base_delay=base_delay, label=label
+            _do,
+            max_retries=max_retries,
+            base_delay=base_delay,
+            attempt_timeout=25.0,
+            label=label,
         )
     except Exception as exc:
         logger.error("Failed to fetch %s: %s", label or full_url, exc)
@@ -731,11 +735,80 @@ async def _scrape_branch(
 # ---------------------------------------------------------------------------
 
 
+def _merge_branches(
+    live_branches: List[Branch],
+    fallback_branches: List[Branch],
+) -> List[Branch]:
+    merged: List[Branch] = []
+    seen: set[int] = set()
+    for branch in [*live_branches, *fallback_branches]:
+        branch_id = int(branch["id"])
+        if branch_id in seen:
+            continue
+        seen.add(branch_id)
+        merged.append(branch)
+    return merged
+
+
+async def _branch_has_catalog(
+    session: aiohttp.ClientSession,
+    branch: Branch,
+    probe_categories: List[str],
+    max_retries: int,
+    base_delay: float,
+) -> bool:
+    branch_id = branch["id"]
+    for category_id in probe_categories:
+        data = await _fetch_page(
+            session,
+            _category_url(branch_id, category_id),
+            f"appId=4&from=0&languageId=1&size=1",
+            max_retries=max_retries,
+            base_delay=base_delay,
+            label=f"branch={branch_id} catalog probe cat={category_id}",
+        )
+        if int(data.get("total") or 0) > 0:
+            return True
+    return False
+
+
+async def _filter_product_branches(
+    session: aiohttp.ClientSession,
+    branches: List[Branch],
+    probe_categories: List[str],
+    max_retries: int,
+    base_delay: float,
+) -> List[Branch]:
+    task_fns = [
+        lambda branch=branch: _branch_has_catalog(
+            session,
+            branch,
+            probe_categories,
+            max_retries,
+            base_delay,
+        )
+        for branch in branches
+    ]
+    results = await run_concurrently(task_fns, max_concurrent=8)
+    product_branches = [
+        branch
+        for branch, result in zip(branches, results)
+        if result is True
+    ]
+    logger.info(
+        "tivtaam: %d/%d candidate branches have product catalog data",
+        len(product_branches),
+        len(branches),
+    )
+    return product_branches
+
+
 async def scrape(
     branches: Optional[List[Branch]] = None,
     flt: Optional[ScrapeFilter] = None,
-    batch_size: int = 100,
+    batch_size: int = 300,
     max_concurrent: int = 15,
+    branch_concurrent: int = 4,
     max_retries: int = 3,
     base_retry_delay: float = 1.0,
 ) -> ScrapeResult:
@@ -752,20 +825,37 @@ async def scrape(
     Returns:
         ScrapeResult with products_by_store keyed by str(branch_id).
     """
-    if branches is None:
-        branches = ONLINE_BRANCHES
     if flt is None:
         flt = {}
 
     scraped_at = utc_now_iso()
     t0 = time.monotonic()
     errors: List[str] = []
+    filter_cats = flt.get("category_ids")
 
     connector = aiohttp.TCPConnector(ssl=make_ssl_context())
     async with aiohttp.ClientSession(connector=connector) as session:
-        products_by_store: Dict[str, List[UnifiedProduct]] = {}
-
-        for branch in branches:
+        if branches is None:
+            live_branches = await update_branches()
+            candidates = (
+                _merge_branches(live_branches, ONLINE_BRANCHES)
+                if live_branches
+                else ONLINE_BRANCHES
+            )
+            branches = await _filter_product_branches(
+                session,
+                candidates,
+                filter_cats if filter_cats else CATEGORIES[:8],
+                max_retries,
+                base_retry_delay,
+            )
+            if not branches:
+                branches = ONLINE_BRANCHES
+                logger.warning(
+                    "tivtaam: product-branch probing found no branches; falling back to %d static branch(es)",
+                    len(branches),
+                )
+        async def _scrape_one_branch(branch: Branch) -> tuple[str, List[UnifiedProduct], Optional[str]]:
             try:
                 prods = await _scrape_branch(
                     session,
@@ -777,12 +867,25 @@ async def scrape(
                     base_retry_delay,
                     scraped_at,
                 )
-                products_by_store[str(branch["id"])] = prods
+                return str(branch["id"]), prods, None
             except Exception as exc:
                 msg = f"branch={branch['id']} failed: {exc}"
                 logger.error(msg)
+                return str(branch["id"]), [], msg
+
+        products_by_store: Dict[str, List[UnifiedProduct]] = {}
+        task_fns = [lambda branch=branch: _scrape_one_branch(branch) for branch in branches]
+        results = await run_concurrently(task_fns, max_concurrent=branch_concurrent)
+        for result in results:
+            if isinstance(result, Exception):
+                msg = f"branch task failed: {result}"
+                logger.error(msg)
                 errors.append(msg)
-                products_by_store[str(branch["id"])] = []
+                continue
+            branch_id, products, error = result
+            if error:
+                errors.append(error)
+            products_by_store[branch_id] = products
 
     duration = time.monotonic() - t0
     total = sum(len(v) for v in products_by_store.values())

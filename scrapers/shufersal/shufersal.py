@@ -112,6 +112,7 @@ async def _fetch_page(
             _do,
             max_retries=max_retries,
             base_delay=base_delay,
+            attempt_timeout=25.0,
             label=f"shufersal page={page} q='{query}'",
         )
     except Exception as exc:
