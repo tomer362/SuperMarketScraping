@@ -37,8 +37,9 @@ from catalog_service import (
     serialize_shopping_list_summary,
     suggest_products,
 )
+from chains import iter_active_chains
 from db import async_session_factory, create_tables, dispose_engine, get_session
-from models import CanonicalProduct, GenericProductGroup, ShoppingList, ShoppingListItem, User
+from models import CatalogRefreshRun, CanonicalProduct, GenericProductGroup, ShoppingList, ShoppingListItem, User
 from schemas import (
     AuthPayload,
     CatalogStatusOut,
@@ -52,6 +53,7 @@ from schemas import (
     ProductDetailOut,
     ProductSearchResultOut,
     RefreshTriggerOut,
+    RefreshProgressOut,
     RegisterIn,
     ShoppingListComparisonOut,
     ShoppingListCreateIn,
@@ -123,6 +125,44 @@ def _require_refresh_auth(authorization: str | None) -> None:
     expected = f"Bearer {settings.refresh_auth_token}"
     if authorization != expected:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+
+def _build_refresh_progress(run: dict | None, *, refresh_in_progress: bool) -> RefreshProgressOut | None:
+    if not refresh_in_progress or not run:
+        return None
+    total_chains = len(iter_active_chains())
+    chains_scraped = list(run.get("chains_scraped") or [])
+    chains_failed = list(run.get("chains_failed") or [])
+    completed_chains = min(total_chains, len(set(chains_scraped + chains_failed)))
+    progress_percent = 0
+    if total_chains > 0:
+        progress_percent = round((completed_chains / total_chains) * 100)
+    if run.get("status") in {"done", "failed"}:
+        progress_percent = 100
+    progress_percent = max(0, min(100, progress_percent))
+
+    if completed_chains == 0:
+        status_label = "מתחיל רענון קטלוג..."
+    elif progress_percent >= 100:
+        status_label = "מסיים רענון קטלוג..."
+    else:
+        status_label = f"נסרקו {completed_chains} מתוך {total_chains} רשתות"
+
+    return RefreshProgressOut(
+        run_id=int(run.get("run_id") or 0),
+        source=str(run.get("source") or "manual"),
+        refresh_kind=str(run.get("refresh_kind") or "prices"),
+        status=str(run.get("status") or "running"),
+        started_at=run.get("started_at"),
+        completed_chains=completed_chains,
+        total_chains=total_chains,
+        progress_percent=progress_percent,
+        current_status_label=status_label,
+        chains_scraped=chains_scraped,
+        chains_failed=chains_failed,
+        products_upserted=int(run.get("products_upserted") or 0),
+        errors=list(run.get("errors") or []),
+    )
 
 
 scheduler = RefreshScheduler(
@@ -606,6 +646,14 @@ async def compare_list(
 
 @app.get("/api/catalog/status", response_model=CatalogStatusOut, tags=["Catalog"])
 async def catalog_status(session: AsyncSession = Depends(get_session)) -> CatalogStatusOut:
+    running_refresh = (
+        await session.execute(
+            select(CatalogRefreshRun)
+            .where(CatalogRefreshRun.status == "running")
+            .order_by(CatalogRefreshRun.started_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
     last_refresh = await latest_refresh_run(session)
     last_successful_refresh = await latest_refresh_run(session, successful_only=True)
     last_price_refresh = await latest_refresh_run(session, refresh_kind="prices")
@@ -630,9 +678,15 @@ async def catalog_status(session: AsyncSession = Depends(get_session)) -> Catalo
         settings.deals_refresh_interval_hours,
         refresh_kind="deals",
     )
+    refresh_in_progress = scheduler.refresh_in_progress or running_refresh is not None
+    active_refresh = serialize_refresh_run(running_refresh) if running_refresh else scheduler.active_run
     return CatalogStatusOut(
         scheduler_running=scheduler.is_running,
-        refresh_in_progress=scheduler.refresh_in_progress,
+        refresh_in_progress=refresh_in_progress,
+        active_refresh=_build_refresh_progress(
+            active_refresh,
+            refresh_in_progress=refresh_in_progress,
+        ),
         interval_hours=settings.price_refresh_interval_hours,
         price_interval_hours=settings.price_refresh_interval_hours,
         deals_interval_hours=settings.deals_refresh_interval_hours,

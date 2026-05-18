@@ -4,33 +4,18 @@ import { useQuery } from '@tanstack/react-query';
 import { getChains, searchProducts } from '../api';
 import { resolvePreferredChains, subscribePreferredChainsChange } from '../app/chainPreferences';
 import ProductPreviewCard from '../components/ProductPreviewCard';
-import SearchAutocomplete from '../components/SearchAutocomplete';
 import { formatCurrency } from '../lib/format';
 import { parseSearchQuantity } from '../lib/queryQuantity';
-
-function useDebouncedValue<T>(value: T, delay: number) {
-  const [debouncedValue, setDebouncedValue] = useState(value);
-
-  useEffect(() => {
-    const timeout = window.setTimeout(() => setDebouncedValue(value), delay);
-    return () => window.clearTimeout(timeout);
-  }, [delay, value]);
-
-  return debouncedValue;
-}
 
 const SEARCH_SCROLL_KEY = 'supermarket.search.scrollY';
 
 export default function SearchPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const initialQuery = searchParams.get('q') ?? '';
+  const query = searchParams.get('q') ?? '';
   const initialOffset = Number(searchParams.get('offset') ?? 0);
-  const [query, setQuery] = useState(initialQuery);
-  const [submittedQuery, setSubmittedQuery] = useState(initialQuery);
   const [offset, setOffset] = useState(Number.isFinite(initialOffset) && initialOffset > 0 ? initialOffset : 0);
   const [selectedChains, setSelectedChains] = useState<string[]>([]);
-  const [autocompleteHiddenForQuery, setAutocompleteHiddenForQuery] = useState<string | null>(null);
 
   useEffect(() => {
     const savedScrollY = Number(window.sessionStorage.getItem(SEARCH_SCROLL_KEY) ?? 0);
@@ -41,6 +26,11 @@ export default function SearchPage() {
       window.sessionStorage.setItem(SEARCH_SCROLL_KEY, String(window.scrollY));
     };
   }, []);
+
+  useEffect(() => {
+    const nextOffsetRaw = Number(searchParams.get('offset') ?? 0);
+    setOffset(Number.isFinite(nextOffsetRaw) && nextOffsetRaw > 0 ? nextOffsetRaw : 0);
+  }, [searchParams]);
 
   const chainsQuery = useQuery({ queryKey: ['chains'], queryFn: getChains });
   const activeChains = useMemo(
@@ -61,34 +51,17 @@ export default function SearchPage() {
     return subscribePreferredChainsChange(syncSelection);
   }, [activeChains]);
 
-  const debouncedQuery = useDebouncedValue(query, 250);
-  const trimmedQuery = query.trim();
-  const parsedCurrentQuery = parseSearchQuantity(query);
-  const parsedSubmittedQuery = parseSearchQuantity(submittedQuery);
-  const searchQueryText = parsedSubmittedQuery.cleanedQuery;
-  const quantityParams = parsedSubmittedQuery.quantity
-    ? `?qty=${encodeURIComponent(String(parsedSubmittedQuery.quantity.value))}&dim=${encodeURIComponent(parsedSubmittedQuery.quantity.dimension)}`
+  const parsedQuery = parseSearchQuantity(query);
+  const searchQueryText = parsedQuery.cleanedQuery;
+  const quantityParams = parsedQuery.quantity
+    ? `?qty=${encodeURIComponent(String(parsedQuery.quantity.value))}&dim=${encodeURIComponent(parsedQuery.quantity.dimension)}`
     : '';
-  const currentQuantityParams = parsedCurrentQuery.quantity
-    ? `?qty=${encodeURIComponent(String(parsedCurrentQuery.quantity.value))}&dim=${encodeURIComponent(parsedCurrentQuery.quantity.dimension)}`
-    : '';
-  const showAutocomplete = autocompleteHiddenForQuery !== debouncedQuery.trim();
   const readyForSearch = searchQueryText.trim().length >= 3;
 
-  useEffect(() => {
-    const nextQuery = searchParams.get('q') ?? '';
-    const nextOffsetRaw = Number(searchParams.get('offset') ?? 0);
-    const nextOffset = Number.isFinite(nextOffsetRaw) && nextOffsetRaw > 0 ? nextOffsetRaw : 0;
-
-    setQuery(nextQuery);
-    setSubmittedQuery(nextQuery);
-    setOffset(nextOffset);
-  }, [searchParams]);
-
-  const updateSearchUrl = (nextQuery: string, nextOffset: number) => {
+  const updateSearchUrl = (nextOffset: number) => {
     const nextParams = new URLSearchParams();
-    if (nextQuery) {
-      nextParams.set('q', nextQuery);
+    if (query) {
+      nextParams.set('q', query);
     }
     if (nextOffset > 0) {
       nextParams.set('offset', String(nextOffset));
@@ -99,7 +72,7 @@ export default function SearchPage() {
   const resultsQuery = useQuery({
     queryKey: ['product-search', searchQueryText, offset, selectedChains.join(',')],
     queryFn: () => searchProducts(searchQueryText, 20, offset, selectedChains),
-    enabled: readyForSearch,
+    enabled: readyForSearch && !chainsQuery.isLoading,
   });
 
   const totalPages = useMemo(() => {
@@ -111,79 +84,29 @@ export default function SearchPage() {
   const genericGroups = resultsQuery.data?.generic_groups ?? [];
 
   return (
-    <>
     <div className="mx-auto max-w-5xl">
       <section className="space-y-4">
-        <div className="rounded-[34px] border border-white/80 bg-white/95 p-5 shadow-[0_20px_60px_-36px_rgba(15,23,42,0.35)] sm:p-6">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-600">Smart search</p>
-              <h2 className="mt-2 text-2xl font-black text-slate-900">חפש/י מוצרים להשוואה</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-500 sm:text-base">
-                כתבו לפחות 3 תווים כדי לקבל הצעות. לחיצה על חיפוש תציג את כל המוצרים התואמים עם המחיר הזול ביותר לכל מוצר.
-              </p>
-              <p className="mt-2 text-sm text-slate-500">
-                סינון רשתות פעיל מתוך הגדרות: {selectedChains.length.toLocaleString('he-IL')}
-              </p>
-            </div>
+        {!query && (
+          <div className="rounded-[24px] border border-white/80 bg-white/95 p-5 shadow-[0_20px_60px_-36px_rgba(15,23,42,0.35)] sm:p-6">
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-600">Smart search</p>
+            <h2 className="mt-2 text-2xl font-black text-slate-900">חפשו מוצר מהשורה העליונה</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
+              החיפוש נשאר זמין למעלה בכל עמוד, כדי שתוכלו להתחיל השוואה חדשה בלי לחזור למסך הבית.
+            </p>
+            <p className="mt-3 text-sm font-semibold text-slate-500">
+              סינון רשתות פעיל מתוך הגדרות: {selectedChains.length.toLocaleString('he-IL')}
+            </p>
           </div>
+        )}
 
-          <form
-            className="mt-5 space-y-3"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const nextQuery = query.trim();
-              setSubmittedQuery(nextQuery);
-              setOffset(0);
-              setAutocompleteHiddenForQuery(nextQuery);
-              updateSearchUrl(nextQuery, 0);
-            }}
-          >
-            <div className="flex flex-col gap-3 sm:flex-row">
-              <input
-                type="search"
-                value={query}
-                onChange={(event) => {
-                  setQuery(event.target.value);
-                  setAutocompleteHiddenForQuery(null);
-                }}
-                onFocus={() => {
-                  if (trimmedQuery !== autocompleteHiddenForQuery) {
-                    setAutocompleteHiddenForQuery(null);
-                  }
-                }}
-                placeholder="למשל: חלב, ביצים, קוטג׳"
-                className="min-h-14 flex-1 rounded-[24px] border border-slate-200 bg-slate-50 px-5 text-base outline-none transition focus:border-sky-300 focus:bg-white"
-              />
-              <button
-                type="submit"
-                className="min-h-14 rounded-[24px] bg-slate-900 px-6 text-base font-black text-white transition hover:bg-slate-800"
-              >
-                חיפוש
-              </button>
-            </div>
-
-            {query.trim().length > 0 && query.trim().length < 3 && (
-              <p className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-medium text-amber-700">
-                צריך לפחות 3 תווים לפני שנשלח חיפוש לשרת.
-              </p>
-            )}
-
-            {showAutocomplete && (
-              <SearchAutocomplete
-                query={parseSearchQuantity(debouncedQuery).cleanedQuery}
-                chains={selectedChains}
-                onSelect={(productId) => {
-                  setAutocompleteHiddenForQuery(query.trim());
-                  navigate(`/products/${productId}${currentQuantityParams}`);
-                }}
-              />
-            )}
-          </form>
-        </div>
+        {query.trim().length > 0 && query.trim().length < 3 && (
+          <p className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-medium text-amber-700">
+            צריך לפחות 3 תווים לפני שנשלח חיפוש לשרת.
+          </p>
+        )}
 
         {resultsQuery.isLoading && (
-          <div className="rounded-[30px] border border-dashed border-slate-200 bg-white/90 px-5 py-12 text-center text-slate-500 shadow-sm">
+          <div className="rounded-[24px] border border-dashed border-slate-200 bg-white/90 px-5 py-12 text-center text-slate-500 shadow-sm">
             מחפש מוצרים...
           </div>
         )}
@@ -193,7 +116,7 @@ export default function SearchPage() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-semibold text-slate-500">תוצאות עבור</p>
-                <h3 className="text-xl font-black text-slate-900">{submittedQuery}</h3>
+                <h3 className="text-2xl font-black text-slate-900">{query}</h3>
               </div>
               <div className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm">
                 {resultsQuery.data.total.toLocaleString('he-IL')} מוצרים
@@ -201,7 +124,7 @@ export default function SearchPage() {
             </div>
 
             {genericGroups.length > 0 && (
-              <section className="space-y-3 rounded-[30px] border border-emerald-100 bg-emerald-50/70 p-4">
+              <section className="space-y-3 rounded-[24px] border border-emerald-100 bg-emerald-50/70 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700">Comparable groups</p>
@@ -211,13 +134,13 @@ export default function SearchPage() {
                     לפי גודל וסוג זהים
                   </span>
                 </div>
-                <div className="grid gap-3 xl:grid-cols-2">
+                <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,22rem),1fr))]">
                   {genericGroups.map((group) => (
                     <button
                       key={group.key}
                       type="button"
                       onClick={() => navigate(`/groups/${encodeURIComponent(group.key)}${quantityParams}`)}
-                      className="rounded-[24px] border border-white bg-white/95 p-4 text-right shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+                      className="rounded-[20px] border border-white bg-white/95 p-4 text-right shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
                     >
                       <p className="text-base font-black text-slate-900">{group.label}</p>
                       <p className="mt-1 text-sm text-slate-500">
@@ -238,7 +161,7 @@ export default function SearchPage() {
             )}
 
             {resultsQuery.data.products.length === 0 ? (
-              <div className="rounded-[30px] border border-dashed border-slate-200 bg-white/90 px-5 py-12 text-center text-slate-500 shadow-sm">
+              <div className="rounded-[24px] border border-dashed border-slate-200 bg-white/90 px-5 py-12 text-center text-slate-500 shadow-sm">
                 לא מצאנו מוצרים תואמים. נסו מונח אחר.
               </div>
             ) : (
@@ -256,7 +179,7 @@ export default function SearchPage() {
                   onClick={() => {
                     const nextOffset = Math.max(0, offset - 20);
                     setOffset(nextOffset);
-                    updateSearchUrl(submittedQuery, nextOffset);
+                    updateSearchUrl(nextOffset);
                   }}
                   disabled={offset === 0}
                   className="rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-40"
@@ -271,7 +194,7 @@ export default function SearchPage() {
                   onClick={() => {
                     const nextOffset = offset + 20;
                     setOffset(nextOffset);
-                    updateSearchUrl(submittedQuery, nextOffset);
+                    updateSearchUrl(nextOffset);
                   }}
                   disabled={Math.floor(offset / 20) + 1 >= totalPages}
                   className="rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-40"
@@ -284,6 +207,5 @@ export default function SearchPage() {
         )}
       </section>
     </div>
-    </>
   );
 }

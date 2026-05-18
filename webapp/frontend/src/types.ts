@@ -216,9 +216,26 @@ export interface RefreshRun {
   errors: string[];
 }
 
+export interface RefreshProgress {
+  run_id: number;
+  source: string;
+  refresh_kind: string;
+  status: string;
+  started_at?: string | null;
+  completed_chains: number;
+  total_chains: number;
+  progress_percent: number;
+  current_status_label: string;
+  chains_scraped: string[];
+  chains_failed: string[];
+  products_upserted: number;
+  errors: string[];
+}
+
 export interface CatalogStatus {
   scheduler_running: boolean;
   refresh_in_progress: boolean;
+  active_refresh?: RefreshProgress | null;
   interval_hours: number;
   price_interval_hours: number;
   deals_interval_hours: number;

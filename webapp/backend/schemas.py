@@ -263,9 +263,26 @@ class RefreshRunOut(BaseModel):
     errors: list[str] = []
 
 
+class RefreshProgressOut(BaseModel):
+    run_id: int
+    source: str
+    refresh_kind: str
+    status: str
+    started_at: datetime | None = None
+    completed_chains: int = 0
+    total_chains: int = 0
+    progress_percent: int = 0
+    current_status_label: str
+    chains_scraped: list[str] = []
+    chains_failed: list[str] = []
+    products_upserted: int = 0
+    errors: list[str] = []
+
+
 class CatalogStatusOut(BaseModel):
     scheduler_running: bool
     refresh_in_progress: bool
+    active_refresh: RefreshProgressOut | None = None
     interval_hours: float
     price_interval_hours: float
     deals_interval_hours: float

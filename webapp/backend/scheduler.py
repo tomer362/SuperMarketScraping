@@ -31,6 +31,7 @@ class RefreshScheduler:
         self._lock = asyncio.Lock()
         self._running = False
         self._last_run: dict | None = None
+        self._active_run: dict | None = None
 
     @property
     def is_running(self) -> bool:
@@ -41,6 +42,12 @@ class RefreshScheduler:
         return self._last_run
 
     @property
+    def active_run(self) -> dict | None:
+        if not self.refresh_in_progress:
+            return None
+        return self._active_run
+
+    @property
     def refresh_in_progress(self) -> bool:
         return self._lock.locked() or (
             self._refresh_task is not None and not self._refresh_task.done()
@@ -48,6 +55,11 @@ class RefreshScheduler:
 
     async def _run_refresh(self, source: str, refresh_kind: str) -> None:
         async with self._lock:
+            self._active_run = {
+                "source": source,
+                "refresh_kind": refresh_kind,
+                "status": "running",
+            }
             try:
                 self._last_run = await self._refresh_callback(source, refresh_kind)
             except Exception as exc:
@@ -58,6 +70,8 @@ class RefreshScheduler:
                     "status": "failed",
                     "errors": [str(exc)],
                 }
+            finally:
+                self._active_run = None
 
     async def start(self) -> None:
         if self._running:

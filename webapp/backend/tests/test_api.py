@@ -454,12 +454,43 @@ async def test_catalog_status(authenticated_client):
     response = await authenticated_client.get('/api/catalog/status')
     assert response.status_code == 200
     payload = response.json()
+    assert payload['active_refresh'] is None
     assert payload['last_successful_refresh'] is not None
     assert payload['last_successful_price_refresh'] is not None
     assert 'last_successful_deals_refresh' in payload
     assert payload['price_interval_hours'] == 24
     assert payload['deals_interval_hours'] == 4
     assert payload['chains']
+
+
+@pytest.mark.asyncio
+async def test_catalog_status_includes_active_refresh_progress(authenticated_client):
+    from db import async_session_factory
+    from models import CatalogRefreshRun
+
+    async with async_session_factory() as session:
+        run = CatalogRefreshRun(
+            source="manual",
+            refresh_kind="prices",
+            status="running",
+            chains_scraped=["carrefour", "ramilevi"],
+            chains_failed=["quik"],
+            products_upserted=123,
+            errors=["quik: timeout"],
+        )
+        session.add(run)
+        await session.commit()
+
+    response = await authenticated_client.get('/api/catalog/status')
+    assert response.status_code == 200
+    progress = response.json()['active_refresh']
+    assert progress['status'] == 'running'
+    assert progress['completed_chains'] == 3
+    assert progress['total_chains'] == 10
+    assert progress['progress_percent'] == 30
+    assert progress['products_upserted'] == 123
+    assert progress['chains_scraped'] == ["carrefour", "ramilevi"]
+    assert progress['chains_failed'] == ["quik"]
 
 
 @pytest.mark.asyncio
