@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { addGenericGroupItem, addListItem, createList, getLists } from '../api';
-import { formatQuantity } from '../lib/format';
+import { formatQuantity, formatQuantityWithUnit } from '../lib/format';
 import type { GenericProductGroup, ProductDetail, ShoppingListSummary } from '../types';
 
 type ListPickerItem =
@@ -11,11 +11,20 @@ type ListPickerItem =
 interface ListPickerDialogProps {
   product?: ProductDetail;
   group?: GenericProductGroup;
+  defaultQuantity?: number;
+  defaultQuantityDimension?: string | null;
   isOpen: boolean;
   onClose: () => void;
 }
 
-export default function ListPickerDialog({ product, group, isOpen, onClose }: ListPickerDialogProps) {
+export default function ListPickerDialog({
+  product,
+  group,
+  defaultQuantity = 1,
+  defaultQuantityDimension = null,
+  isOpen,
+  onClose,
+}: ListPickerDialogProps) {
   const [newListName, setNewListName] = useState('');
   const queryClient = useQueryClient();
   const listsQuery = useQuery({ queryKey: ['lists'], queryFn: getLists, enabled: isOpen });
@@ -30,9 +39,9 @@ export default function ListPickerDialog({ product, group, isOpen, onClose }: Li
       throw new Error('Missing list item');
     }
     if (item.kind === 'product') {
-      return addListItem(shoppingListId, item.product.id, 1);
+      return addListItem(shoppingListId, item.product.id, defaultQuantity);
     }
-    return addGenericGroupItem(shoppingListId, item.group.key, 1);
+    return addGenericGroupItem(shoppingListId, item.group.key, defaultQuantity);
   };
 
   const addMutation = useMutation({
@@ -75,6 +84,11 @@ export default function ListPickerDialog({ product, group, isOpen, onClose }: Li
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-sky-600">רשימות</p>
             <h2 className="mt-1 text-xl font-black text-slate-900">הוסף/י את המוצר</h2>
             <p className="mt-1 text-sm text-slate-500">{itemName}</p>
+            {defaultQuantity !== 1 && (
+              <p className="mt-1 text-xs font-semibold text-sky-700">
+                כמות מבוקשת: {formatQuantityWithUnit(defaultQuantity, defaultQuantityDimension)}
+              </p>
+            )}
             {itemSubtitle && <p className="mt-1 text-xs font-semibold text-emerald-700">{itemSubtitle}</p>}
           </div>
           <button

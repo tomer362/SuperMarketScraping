@@ -323,6 +323,7 @@ export default function ListDetailPage() {
                           <p className="truncate text-sm font-bold text-slate-900">{item.product_name}</p>
                           <p className="mt-1 text-xs text-slate-500">
                             כמות {formatQuantity(item.quantity)}
+                            {item.fulfillment_description ? ` · ${item.fulfillment_description}` : ''}
                             {item.deal_applied && item.deal_description ? ` · ${item.deal_description}` : ''}
                           </p>
                         </div>

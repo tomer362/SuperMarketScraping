@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
-from math import inf
+from math import ceil, inf
 from typing import Any, Iterable, Sequence
 
-from sqlalchemy import and_, case, delete, exists, func, insert, or_, select, update
+from sqlalchemy import and_, case, delete, exists, func, insert, or_, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -25,9 +26,11 @@ from models import (
     ShoppingListItem,
 )
 from generic_groups import classify_generic_offer
+from settings import get_settings
 from text_utils import build_match_key, build_search_text, normalize_barcode, normalize_text
 
 
+logger = logging.getLogger("webapp.catalog")
 ACTIVE_CHAIN_KEYS = tuple(chain.key for chain in iter_active_chains())
 _FUZZY_SEARCH_THRESHOLD = 0.72
 _FUZZY_CANDIDATE_LIMIT = 1200
@@ -74,6 +77,16 @@ _GENERIC_GROUP_COPY_COLUMNS = (
     "updated_at",
 )
 _GENERIC_MEMBER_COPY_COLUMNS = ("group_key", "chain", "store_id", "product_id")
+_DEAL_MERGE_COLUMNS = (
+    "price",
+    "regular_price",
+    "sale_price",
+    "discount_percent",
+    "price_per_base_unit",
+    "deal",
+    "scraped_at",
+    "refresh_run_id",
+)
 
 
 def _offer_model(target_table: str):
@@ -149,6 +162,10 @@ def _chunks(values: Sequence[Any], size: int) -> Iterable[Sequence[Any]]:
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _catalog_debug_enabled() -> bool:
+    return get_settings().catalog_debug
 
 
 def _canonical_payload(product: dict[str, Any]) -> dict[str, Any]:
@@ -228,6 +245,21 @@ async def _load_existing_canonical_products(
     return existing
 
 
+async def _load_canonical_ids(
+    session: AsyncSession,
+    match_keys: list[str],
+) -> dict[str, int]:
+    ids: dict[str, int] = {}
+    for batch in _chunks(match_keys, 1000):
+        rows = await session.execute(
+            select(CanonicalProduct.match_key, CanonicalProduct.id).where(
+                CanonicalProduct.match_key.in_(batch)
+            )
+        )
+        ids.update({match_key: row_id for match_key, row_id in rows})
+    return ids
+
+
 async def upsert_catalog_products(
     session: AsyncSession,
     products: list[dict[str, Any]],
@@ -240,49 +272,45 @@ async def upsert_catalog_products(
 
     canonical_rows = [_canonical_payload(product) for product in products]
     canonical_by_key = {row["match_key"]: row for row in canonical_rows}
-    existing = await _load_existing_canonical_products(
-        session, list(canonical_by_key.keys())
-    )
-
-    created: dict[str, CanonicalProduct] = {}
-    for match_key, row in canonical_by_key.items():
-        canonical = existing.get(match_key)
-        if canonical is None:
-            canonical = CanonicalProduct(**row)
-            session.add(canonical)
-            created[match_key] = canonical
-        else:
-            canonical.display_name = row["display_name"]
-            canonical.normalized_name = row["normalized_name"]
-            canonical.brand = row["brand"]
-            canonical.normalized_brand = row["normalized_brand"]
-            canonical.barcode = row["barcode"]
-            canonical.manufacturer = row["manufacturer"]
-            canonical.image_url = row["image_url"] or canonical.image_url
-            canonical.unit_description = row["unit_description"]
-            canonical.unit_of_measure = row["unit_of_measure"]
-            canonical.unit_qty = row["unit_qty"]
-            canonical.unit_qty_si = row["unit_qty_si"]
-            canonical.unit_dimension = row["unit_dimension"]
-            canonical.search_text = row["search_text"]
-
-    await session.flush()
-    canonical_id_by_key = {
-        **{key: row.id for key, row in existing.items()},
-        **{key: row.id for key, row in created.items()},
-    }
-
-    rows = [
-        _offer_payload(product, canonical_id_by_key[build_match_key(product)], refresh_run_id)
-        for product in products
-    ]
-
     if database_backend == "postgresql":
         from sqlalchemy.dialects.postgresql import insert as dialect_insert
     elif database_backend == "sqlite":
         from sqlalchemy.dialects.sqlite import insert as dialect_insert
     else:
         raise RuntimeError(f"Unsupported database backend for upsert: {database_backend}")
+
+    for batch in _chunks(list(canonical_by_key.values()), 1000):
+        stmt = dialect_insert(CanonicalProduct).values(list(batch))
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["match_key"],
+            set_={
+                "display_name": stmt.excluded.display_name,
+                "normalized_name": stmt.excluded.normalized_name,
+                "brand": stmt.excluded.brand,
+                "normalized_brand": stmt.excluded.normalized_brand,
+                "barcode": stmt.excluded.barcode,
+                "manufacturer": stmt.excluded.manufacturer,
+                "image_url": stmt.excluded.image_url,
+                "unit_description": stmt.excluded.unit_description,
+                "unit_of_measure": stmt.excluded.unit_of_measure,
+                "unit_qty": stmt.excluded.unit_qty,
+                "unit_qty_si": stmt.excluded.unit_qty_si,
+                "unit_dimension": stmt.excluded.unit_dimension,
+                "search_text": stmt.excluded.search_text,
+                "updated_at": _now_utc(),
+            },
+        )
+        await session.execute(stmt)
+
+    await session.flush()
+    canonical_id_by_key = await _load_canonical_ids(
+        session, list(canonical_by_key.keys())
+    )
+
+    rows = [
+        _offer_payload(product, canonical_id_by_key[build_match_key(product)], refresh_run_id)
+        for product in products
+    ]
 
     offer_model = _offer_model(target_table)
 
@@ -320,6 +348,103 @@ async def upsert_catalog_products(
         await session.execute(stmt)
 
     return len(rows)
+
+
+async def stage_existing_offer_deals(
+    session: AsyncSession,
+    products: list[dict[str, Any]],
+    refresh_run_id: int,
+) -> int:
+    if not products:
+        return 0
+
+    if database_backend == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as dialect_insert
+    elif database_backend == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as dialect_insert
+    else:
+        raise RuntimeError(f"Unsupported database backend for upsert: {database_backend}")
+
+    offer_keys = {
+        (
+            str(product.get("chain", "")),
+            str(product.get("store_id", "")),
+            str(product.get("product_id", "")),
+        )
+        for product in products
+    }
+    active_ids: dict[tuple[str, str, str], int] = {}
+    for batch in _chunks(list(offer_keys), 500):
+        rows = await session.execute(
+            select(
+                CatalogOffer.chain,
+                CatalogOffer.store_id,
+                CatalogOffer.product_id,
+                CatalogOffer.canonical_product_id,
+            )
+            .where(CatalogOffer.is_active.is_(True))
+            .where(tuple_(CatalogOffer.chain, CatalogOffer.store_id, CatalogOffer.product_id).in_(batch))
+        )
+        active_ids.update(
+            {
+                (chain, store_id, product_id): canonical_id
+                for chain, store_id, product_id, canonical_id in rows
+            }
+        )
+
+    rows = []
+    for product in products:
+        key = (
+            str(product.get("chain", "")),
+            str(product.get("store_id", "")),
+            str(product.get("product_id", "")),
+        )
+        canonical_product_id = active_ids.get(key)
+        if canonical_product_id is None:
+            continue
+        rows.append(_offer_payload(product, canonical_product_id, refresh_run_id))
+
+    await clear_staging_offers(session)
+    if not rows:
+        return 0
+
+    for batch in _chunks(rows, 500):
+        stmt = dialect_insert(CatalogOfferStaging).values(list(batch))
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["chain", "store_id", "product_id"],
+            set_={
+                "price": stmt.excluded.price,
+                "regular_price": stmt.excluded.regular_price,
+                "sale_price": stmt.excluded.sale_price,
+                "discount_percent": stmt.excluded.discount_percent,
+                "price_per_base_unit": stmt.excluded.price_per_base_unit,
+                "deal": stmt.excluded.deal,
+                "scraped_at": stmt.excluded.scraped_at,
+                "refresh_run_id": stmt.excluded.refresh_run_id,
+                "updated_at": _now_utc(),
+            },
+        )
+        await session.execute(stmt)
+    return len(rows)
+
+
+async def merge_deal_staging_into_active(session: AsyncSession) -> int:
+    staged_rows = list((await session.execute(select(CatalogOfferStaging))).scalars())
+    updated = 0
+    now = _now_utc()
+    for row in staged_rows:
+        values = {column: getattr(row, column) for column in _DEAL_MERGE_COLUMNS}
+        values["updated_at"] = now
+        result = await session.execute(
+            update(CatalogOffer)
+            .where(CatalogOffer.is_active.is_(True))
+            .where(CatalogOffer.chain == row.chain)
+            .where(CatalogOffer.store_id == row.store_id)
+            .where(CatalogOffer.product_id == row.product_id)
+            .values(**values)
+        )
+        updated += int(result.rowcount or 0)
+    return updated
 
 
 async def deactivate_missing_offers_for_chain(
@@ -470,15 +595,27 @@ async def latest_refresh_run(
     session: AsyncSession,
     *,
     successful_only: bool = False,
+    refresh_kind: str | None = None,
 ) -> CatalogRefreshRun | None:
     stmt = select(CatalogRefreshRun).order_by(CatalogRefreshRun.started_at.desc())
     if successful_only:
         stmt = stmt.where(CatalogRefreshRun.status == "done")
+    if refresh_kind:
+        stmt = stmt.where(CatalogRefreshRun.refresh_kind == refresh_kind)
     return (await session.execute(stmt.limit(1))).scalar_one_or_none()
 
 
-async def catalog_is_fresh(session: AsyncSession, max_age_hours: float) -> bool:
-    refresh = await latest_refresh_run(session, successful_only=True)
+async def catalog_is_fresh(
+    session: AsyncSession,
+    max_age_hours: float,
+    *,
+    refresh_kind: str | None = None,
+) -> bool:
+    refresh = await latest_refresh_run(
+        session,
+        successful_only=True,
+        refresh_kind=refresh_kind,
+    )
     if not refresh or not refresh.finished_at:
         return False
     finished_at = refresh.finished_at
@@ -493,6 +630,7 @@ def serialize_refresh_run(run: CatalogRefreshRun | None) -> dict[str, Any] | Non
     return {
         "run_id": run.id,
         "source": run.source,
+        "refresh_kind": run.refresh_kind,
         "status": run.status,
         "started_at": run.started_at,
         "finished_at": run.finished_at,
@@ -671,6 +809,61 @@ async def _preview_offer_map(
     }
 
 
+def _same_product_condition(product: CanonicalProduct) -> Any:
+    conditions: list[Any] = [CanonicalProduct.id == product.id]
+    if product.barcode:
+        conditions.append(CanonicalProduct.barcode == product.barcode)
+    if product.match_key:
+        conditions.append(CanonicalProduct.match_key == product.match_key)
+    if product.normalized_name:
+        unit_qty_condition = (
+            CanonicalProduct.unit_qty_si == product.unit_qty_si
+            if product.unit_qty_si is not None
+            else CanonicalProduct.unit_qty_si.is_(None)
+        )
+        unit_dimension_condition = (
+            CanonicalProduct.unit_dimension == product.unit_dimension
+            if product.unit_dimension is not None
+            else CanonicalProduct.unit_dimension.is_(None)
+        )
+        conditions.append(
+            and_(
+                CanonicalProduct.normalized_name == product.normalized_name,
+                CanonicalProduct.normalized_brand == product.normalized_brand,
+                unit_qty_condition,
+                unit_dimension_condition,
+            )
+        )
+    return or_(*conditions)
+
+
+async def _equivalent_product_ids(
+    session: AsyncSession,
+    products: Sequence[CanonicalProduct],
+) -> dict[int, set[int]]:
+    equivalents: dict[int, set[int]] = {}
+    for product in products:
+        ids = set(
+            (
+                await session.execute(
+                    select(CanonicalProduct.id).where(_same_product_condition(product))
+                )
+            ).scalars()
+        )
+        ids.add(product.id)
+        equivalents[product.id] = ids
+        if _catalog_debug_enabled():
+            logger.debug(
+                "equivalent_products source_id=%s name=%r barcode=%r match_key=%r equivalent_ids=%s",
+                product.id,
+                product.display_name,
+                product.barcode,
+                product.match_key,
+                sorted(ids),
+            )
+    return equivalents
+
+
 def serialize_product_preview(
     product: CanonicalProduct,
     offer: CatalogOffer,
@@ -707,6 +900,33 @@ def serialize_generic_group(group: GenericProductGroup | GenericProductGroupStag
         "offer_count": group.offer_count,
         "chain_count": group.chain_count,
         "cheapest_price": round(float(group.cheapest_price), 2) if group.cheapest_price is not None else None,
+    }
+
+
+def serialize_chain_offer(offer: CatalogOffer) -> dict[str, Any]:
+    return {
+        "id": offer.id,
+        "chain": offer.chain,
+        "chain_label": get_chain_definition(offer.chain).label,
+        "store_id": offer.store_id,
+        "store_name": offer.store_name,
+        "product_id": offer.product_id,
+        "name": offer.name,
+        "price": round(float(offer.price), 2),
+        "regular_price": round(float(offer.regular_price), 2),
+        "sale_price": offer.sale_price,
+        "discount_percent": offer.discount_percent,
+        "is_weighable": bool(offer.is_weighable),
+        "unit_description": offer.unit_description,
+        "unit_of_measure": offer.unit_of_measure,
+        "unit_qty": offer.unit_qty,
+        "unit_qty_si": offer.unit_qty_si,
+        "unit_dimension": offer.unit_dimension,
+        "price_per_base_unit": offer.price_per_base_unit,
+        "brand": offer.brand,
+        "image_url": offer.image_url,
+        "deal": offer.deal,
+        "scraped_at": offer.scraped_at,
     }
 
 
@@ -781,6 +1001,55 @@ async def search_generic_groups(
     return groups
 
 
+async def load_generic_group_detail(
+    session: AsyncSession,
+    group_key: str,
+    chain_filter: Sequence[str] | None = None,
+) -> dict[str, Any] | None:
+    group = await session.get(GenericProductGroup, group_key)
+    if not group:
+        return None
+    chain_keys = _resolve_chain_keys(chain_filter)
+    if not chain_keys:
+        return None
+
+    rows = list(
+        (
+            await session.execute(
+                select(CatalogOffer)
+                .join(
+                    GenericProductGroupMember,
+                    and_(
+                        GenericProductGroupMember.chain == CatalogOffer.chain,
+                        GenericProductGroupMember.store_id == CatalogOffer.store_id,
+                        GenericProductGroupMember.product_id == CatalogOffer.product_id,
+                    ),
+                )
+                .where(GenericProductGroupMember.group_key == group_key)
+                .where(CatalogOffer.is_active.is_(True))
+                .where(CatalogOffer.chain.in_(chain_keys))
+                .order_by(CatalogOffer.chain.asc(), CatalogOffer.price.asc(), CatalogOffer.id.asc())
+            )
+        ).scalars()
+    )
+
+    best_offer_by_chain: dict[str, CatalogOffer] = {}
+    for offer in rows:
+        if offer.chain not in best_offer_by_chain:
+            best_offer_by_chain[offer.chain] = offer
+
+    chain_offers = sorted(best_offer_by_chain.values(), key=lambda offer: (offer.price, offer.id))
+    if not chain_offers:
+        return None
+
+    detail = serialize_generic_group(group)
+    detail["chain_count"] = len(chain_offers)
+    detail["offer_count"] = len(rows)
+    detail["cheapest_price"] = round(float(chain_offers[0].price), 2)
+    detail["offers"] = [serialize_chain_offer(offer) for offer in chain_offers]
+    return detail
+
+
 async def suggest_products(
     session: AsyncSession,
     query: str,
@@ -845,12 +1114,30 @@ async def search_products(
     if not chain_keys:
         return {"query": query, "total": 0, "products": [], "generic_groups": []}
 
+    if _catalog_debug_enabled():
+        logger.debug(
+            "search_start query=%r normalized=%r limit=%s offset=%s chains=%s",
+            query,
+            normalized,
+            limit,
+            offset,
+            list(chain_keys),
+        )
+
     generic_groups = await search_generic_groups(session, query, chain_filter=chain_keys)
 
     stmt = select(CanonicalProduct).where(_active_offer_exists(chain_keys)).where(condition)
     count = (
         await session.execute(select(func.count()).select_from(stmt.subquery()))
     ).scalar_one()
+
+    if _catalog_debug_enabled():
+        logger.debug(
+            "search_exact_count query=%r count=%s generic_groups=%s",
+            query,
+            int(count or 0),
+            [group["key"] for group in generic_groups],
+        )
 
     if not count:
         result = await _fuzzy_search_products(
@@ -862,6 +1149,13 @@ async def search_products(
             chain_keys,
         )
         result["generic_groups"] = generic_groups
+        if _catalog_debug_enabled():
+            logger.debug(
+                "search_fuzzy_result query=%r total=%s product_ids=%s",
+                query,
+                result.get("total"),
+                [product["id"] for product in result.get("products", [])],
+            )
         return result
 
     products = list(
@@ -881,6 +1175,15 @@ async def search_products(
         for product in products
         if product.id in best_offers
     ]
+    if _catalog_debug_enabled():
+        logger.debug(
+            "search_result query=%r total=%s returned=%s product_ids=%s chain_counts=%s",
+            query,
+            int(count or 0),
+            len(serialized),
+            [product["id"] for product in serialized],
+            {product.id: chain_counts.get(product.id, 0) for product in products},
+        )
     return {"query": query, "total": int(count or 0), "products": serialized, "generic_groups": generic_groups}
 
 
@@ -889,11 +1192,19 @@ async def load_product_detail(session: AsyncSession, product_id: int) -> dict[st
     if not product:
         return None
 
+    equivalent_ids = (await _equivalent_product_ids(session, [product]))[product.id]
+    if _catalog_debug_enabled():
+        logger.debug(
+            "product_detail_start product_id=%s name=%r equivalent_ids=%s",
+            product_id,
+            product.display_name,
+            sorted(equivalent_ids),
+        )
     offers = list(
         (
             await session.execute(
                 select(CatalogOffer)
-                .where(CatalogOffer.canonical_product_id == product_id)
+                .where(CatalogOffer.canonical_product_id.in_(equivalent_ids))
                 .where(CatalogOffer.is_active.is_(True))
                 .where(CatalogOffer.chain.in_(ACTIVE_CHAIN_KEYS))
                 .order_by(CatalogOffer.chain.asc(), CatalogOffer.price.asc())
@@ -901,7 +1212,18 @@ async def load_product_detail(session: AsyncSession, product_id: int) -> dict[st
         ).scalars()
     )
     if not offers:
+        if _catalog_debug_enabled():
+            logger.debug("product_detail_no_offers product_id=%s", product_id)
         return None
+
+    if _catalog_debug_enabled():
+        logger.debug(
+            "product_detail_offers product_id=%s raw_offers=%s chains=%s stores=%s",
+            product_id,
+            len(offers),
+            sorted({offer.chain for offer in offers}),
+            sorted({f"{offer.chain}:{offer.store_id}" for offer in offers}),
+        )
 
     best_offer_by_chain: dict[str, CatalogOffer] = {}
     for offer in offers:
@@ -909,27 +1231,7 @@ async def load_product_detail(session: AsyncSession, product_id: int) -> dict[st
             best_offer_by_chain[offer.chain] = offer
 
     chain_offers = sorted(best_offer_by_chain.values(), key=lambda offer: offer.price)
-    detail_offers = [
-        {
-            "id": offer.id,
-            "chain": offer.chain,
-            "chain_label": get_chain_definition(offer.chain).label,
-            "store_id": offer.store_id,
-            "store_name": offer.store_name,
-            "product_id": offer.product_id,
-            "name": offer.name,
-            "price": round(float(offer.price), 2),
-            "regular_price": round(float(offer.regular_price), 2),
-            "sale_price": offer.sale_price,
-            "discount_percent": offer.discount_percent,
-            "price_per_base_unit": offer.price_per_base_unit,
-            "brand": offer.brand,
-            "image_url": offer.image_url,
-            "deal": offer.deal,
-            "scraped_at": offer.scraped_at,
-        }
-        for offer in chain_offers
-    ]
+    detail_offers = [serialize_chain_offer(offer) for offer in chain_offers]
     cheapest_offer = chain_offers[0]
     return {
         "id": product.id,
@@ -1086,46 +1388,47 @@ async def serialize_shopping_list_detail(
     }
 
 
-def _requested_qty_si_for_weighable(offer: CatalogOffer, quantity: float) -> float | None:
-    if not offer.is_weighable:
+_AMOUNT_FULFILLMENT_FAMILIES = {"salmon", "chicken", "ground_beef"}
+
+
+def _compatible_amount_group_condition(group: GenericProductGroup) -> Any:
+    if group.family not in _AMOUNT_FULFILLMENT_FAMILIES:
+        return GenericProductGroup.key == group.key
+    freshness = "frozen" if "frozen" in group.key else "fresh" if "fresh" in group.key else None
+    conditions: list[Any] = [GenericProductGroup.family == group.family]
+    if freshness:
+        conditions.append(GenericProductGroup.key.contains(freshness))
+    return and_(*conditions)
+
+
+def _format_si_size_label(qty_si: float | None, dimension: str | None) -> str | None:
+    if not qty_si or qty_si <= 0:
         return None
-    if not offer.unit_qty_si or offer.unit_qty_si <= 0:
-        return None
-    if offer.unit_dimension == "mass":
-        return quantity * 1000.0
-    if offer.unit_dimension == "volume":
-        return quantity * 1000.0
+    value = float(qty_si)
+    if dimension == "mass":
+        if abs(value % 1000.0) < 1e-6:
+            return f"{value / 1000.0:g} ק״ג"
+        return f"{value:g} גרם"
+    if dimension == "volume":
+        if abs(value % 1000.0) < 1e-6:
+            return f"{value / 1000.0:g} ל׳"
+        return f"{value:g} מ״ל"
+    if dimension == "count":
+        return f"{value:g} יח׳"
     return None
 
 
-def _line_totals_for_offer(offer: CatalogOffer, quantity: float) -> dict[str, Any]:
-    quantity_value = float(quantity)
+def _amount_request_si(family: str | None, quantity: float) -> float | None:
+    if family not in _AMOUNT_FULFILLMENT_FAMILIES:
+        return None
+    return float(quantity) * 1000.0
+
+
+def _offer_total_for_package_count(offer: CatalogOffer, package_count: int) -> tuple[float, bool, str | None]:
     deal = offer.deal or {}
     unit_price = float(offer.price)
     regular_unit_price = float(offer.regular_price)
-
-    requested_qty_si = _requested_qty_si_for_weighable(offer, quantity_value)
-    if requested_qty_si is not None and offer.unit_qty_si and offer.unit_qty_si > 0:
-        ratio = requested_qty_si / float(offer.unit_qty_si)
-        total = unit_price * ratio
-        regular_total = regular_unit_price * ratio
-        deal_applied = unit_price < regular_unit_price
-        deal_description = deal.get("deal_description") if deal_applied else None
-        unit_price_effective = total / quantity_value if quantity_value > 0 else unit_price
-        regular_unit_price_effective = (
-            regular_total / quantity_value if quantity_value > 0 else regular_unit_price
-        )
-        return {
-            "unit_price": round(unit_price_effective, 2),
-            "regular_unit_price": round(regular_unit_price_effective, 2),
-            "line_total": round(total, 2),
-            "regular_line_total": round(regular_total, 2),
-            "deal_applied": deal_applied,
-            "deal_description": deal_description,
-        }
-
-    total = unit_price * quantity_value
-    regular_total = regular_unit_price * quantity_value
+    total = unit_price * package_count
     deal_applied = unit_price < regular_unit_price
     deal_description = deal.get("deal_description") if deal_applied else None
 
@@ -1137,20 +1440,99 @@ def _line_totals_for_offer(offer: CatalogOffer, quantity: float) -> dict[str, An
     ):
         minimum_qty = int(deal["deal_min_qty"])
         deal_total = float(deal["deal_price"])
-        quantity_as_int = int(quantity_value)
-        if minimum_qty > 0 and abs(quantity_value - quantity_as_int) < 1e-6:
-            bundles = quantity_as_int // minimum_qty
-            remainder = quantity_as_int % minimum_qty
-            total = bundles * deal_total + remainder * unit_price
-            deal_applied = bundles > 0 or unit_price < regular_unit_price
-            if deal_applied:
+        if minimum_qty > 0:
+            bundles = package_count // minimum_qty
+            remainder = package_count % minimum_qty
+            deal_candidate = bundles * deal_total + remainder * unit_price
+            if bundles > 0:
+                total = deal_candidate
+                deal_applied = True
                 deal_description = deal.get("deal_description")
+
+    return total, deal_applied, deal_description
+
+
+def _line_totals_for_offer(
+    offer: CatalogOffer,
+    quantity: float,
+    *,
+    fulfillment_family: str | None = None,
+) -> dict[str, Any]:
+    quantity_value = float(quantity)
+    unit_price = float(offer.price)
+    regular_unit_price = float(offer.regular_price)
+    request_qty_si = _amount_request_si(fulfillment_family, quantity_value)
+    if request_qty_si is None and offer.is_weighable and offer.unit_dimension in {"mass", "volume"}:
+        request_qty_si = quantity_value * 1000.0
+
+    if request_qty_si is not None and offer.unit_dimension == "mass" and offer.unit_qty_si and offer.unit_qty_si > 0:
+        if offer.is_weighable:
+            ratio = request_qty_si / float(offer.unit_qty_si)
+            total = unit_price * ratio
+            regular_total = regular_unit_price * ratio
+            deal_applied = unit_price < regular_unit_price
+            deal_description = (offer.deal or {}).get("deal_description") if deal_applied else None
+            purchased_qty_si = request_qty_si
+            package_count = None
+        else:
+            package_count = max(1, ceil(request_qty_si / float(offer.unit_qty_si)))
+            purchased_qty_si = package_count * float(offer.unit_qty_si)
+            total, deal_applied, deal_description = _offer_total_for_package_count(offer, package_count)
+            regular_total = regular_unit_price * package_count
+
+        purchased_quantity = purchased_qty_si / 1000.0
+        unit_price_effective = total / quantity_value if quantity_value > 0 else unit_price
+        regular_unit_price_effective = (
+            regular_total / quantity_value if quantity_value > 0 else regular_unit_price
+        )
+        package_size_label = _format_si_size_label(offer.unit_qty_si, offer.unit_dimension)
+        if offer.is_weighable:
+            fulfillment_description = f"{quantity_value:g} ק״ג במשקל"
+        elif package_count is not None and package_size_label:
+            fulfillment_description = f"{package_count} × {package_size_label}"
+        else:
+            fulfillment_description = None
+
+        return {
+            "unit_price": round(unit_price_effective, 2),
+            "regular_unit_price": round(regular_unit_price_effective, 2),
+            "line_total": round(total, 2),
+            "regular_line_total": round(regular_total, 2),
+            "purchased_quantity": round(purchased_quantity, 3),
+            "purchased_quantity_si": round(purchased_qty_si, 3),
+            "package_count": package_count,
+            "package_size_label": package_size_label,
+            "fulfillment_description": fulfillment_description,
+            "overbuy_si": max(0.0, purchased_qty_si - request_qty_si),
+            "deal_applied": deal_applied,
+            "deal_description": deal_description,
+        }
+
+    quantity_is_integer = abs(quantity_value - int(quantity_value)) < 1e-6
+    if quantity_is_integer:
+        total, deal_applied, deal_description = _offer_total_for_package_count(
+            offer,
+            max(1, int(quantity_value)),
+        )
+    else:
+        total = unit_price * quantity_value
+        deal_applied = unit_price < regular_unit_price
+        deal_description = None
+    regular_total = regular_unit_price * quantity_value
+    if deal_applied and deal_description is None:
+        deal_description = (offer.deal or {}).get("deal_description")
 
     return {
         "unit_price": round(unit_price, 2),
         "regular_unit_price": round(regular_unit_price, 2),
         "line_total": round(total, 2),
         "regular_line_total": round(regular_total, 2),
+        "purchased_quantity": round(quantity_value, 3),
+        "purchased_quantity_si": offer.unit_qty_si,
+        "package_count": int(quantity_value) if quantity_is_integer else None,
+        "package_size_label": _format_si_size_label(offer.unit_qty_si, offer.unit_dimension),
+        "fulfillment_description": None,
+        "overbuy_si": 0.0,
         "deal_applied": deal_applied,
         "deal_description": deal_description,
     }
@@ -1159,13 +1541,25 @@ def _line_totals_for_offer(offer: CatalogOffer, quantity: float) -> dict[str, An
 def _choose_best_offer_for_quantity(
     offers: list[CatalogOffer],
     quantity: float,
+    *,
+    fulfillment_family: str | None = None,
 ) -> tuple[CatalogOffer, dict[str, Any]]:
     best_offer = offers[0]
-    best_meta = _line_totals_for_offer(best_offer, quantity)
-    best_key = (best_meta["line_total"], best_meta["unit_price"], best_offer.id)
+    best_meta = _line_totals_for_offer(best_offer, quantity, fulfillment_family=fulfillment_family)
+    best_key = (
+        best_meta["line_total"],
+        best_meta.get("overbuy_si") or 0,
+        best_meta["unit_price"],
+        best_offer.id,
+    )
     for offer in offers[1:]:
-        meta = _line_totals_for_offer(offer, quantity)
-        key = (meta["line_total"], meta["unit_price"], offer.id)
+        meta = _line_totals_for_offer(offer, quantity, fulfillment_family=fulfillment_family)
+        key = (
+            meta["line_total"],
+            meta.get("overbuy_si") or 0,
+            meta["unit_price"],
+            offer.id,
+        )
         if key < best_key:
             best_offer = offer
             best_meta = meta
@@ -1199,13 +1593,40 @@ async def compare_shopping_list(
             "chains": [],
         }
 
-    product_ids = [item.canonical_product_id for item in items if item.canonical_product_id]
+    exact_items = [item for item in items if item.canonical_product_id]
     generic_keys = [item.generic_group_key for item in items if item.generic_group_key]
+    products_by_id = {
+        item.canonical_product_id: item.canonical_product
+        for item in exact_items
+        if item.canonical_product_id and item.canonical_product
+    }
+    equivalent_ids_by_product = await _equivalent_product_ids(
+        session,
+        list(products_by_id.values()),
+    )
+    source_ids_by_equivalent_id: dict[int, set[int]] = defaultdict(set)
+    for source_id, equivalent_ids in equivalent_ids_by_product.items():
+        for equivalent_id in equivalent_ids:
+            source_ids_by_equivalent_id[equivalent_id].add(source_id)
+    offer_product_ids = sorted(source_ids_by_equivalent_id)
+    if _catalog_debug_enabled():
+        logger.debug(
+            "compare_start list_id=%s item_count=%s exact_item_ids=%s generic_keys=%s equivalent_offer_ids=%s",
+            shopping_list.id,
+            len(items),
+            [item.canonical_product_id for item in exact_items],
+            generic_keys,
+            offer_product_ids,
+        )
     offers = list(
         (
             await session.execute(
                 select(CatalogOffer)
-                .where(CatalogOffer.canonical_product_id.in_(product_ids) if product_ids else False)
+                .where(
+                    CatalogOffer.canonical_product_id.in_(offer_product_ids)
+                    if offer_product_ids
+                    else False
+                )
                 .where(CatalogOffer.is_active.is_(True))
                 .where(CatalogOffer.chain.in_(ACTIVE_CHAIN_KEYS))
                 .order_by(
@@ -1222,13 +1643,57 @@ async def compare_shopping_list(
     offers_by_store_group: dict[tuple[str, str, str], list[CatalogOffer]] = defaultdict(list)
     stores_by_chain: dict[str, dict[str, str]] = defaultdict(dict)
     for offer in offers:
-        offers_by_store_product[(offer.chain, offer.store_id, offer.canonical_product_id)].append(offer)
+        source_ids = source_ids_by_equivalent_id.get(
+            offer.canonical_product_id,
+            {offer.canonical_product_id},
+        )
+        for source_id in source_ids:
+            offers_by_store_product[(offer.chain, offer.store_id, source_id)].append(offer)
         stores_by_chain[offer.chain][offer.store_id] = offer.store_name
 
+    if _catalog_debug_enabled():
+        logger.debug(
+            "compare_exact_offers list_id=%s offers=%s candidate_stores=%s chains=%s",
+            shopping_list.id,
+            len(offers),
+            sum(len(stores) for stores in stores_by_chain.values()),
+            {chain: sorted(stores) for chain, stores in stores_by_chain.items()},
+        )
+
     generic_groups: dict[str, GenericProductGroup] = {}
+    compatible_group_keys_by_item_key: dict[str, set[str]] = defaultdict(set)
     if generic_keys:
         groups = (await session.execute(select(GenericProductGroup).where(GenericProductGroup.key.in_(generic_keys)))).scalars()
         generic_groups = {group.key: group for group in groups}
+        compatible_conditions = [
+            _compatible_amount_group_condition(group)
+            for group in generic_groups.values()
+        ]
+        compatible_groups = list(
+            (
+                await session.execute(
+                    select(GenericProductGroup).where(or_(*compatible_conditions))
+                    if compatible_conditions
+                    else select(GenericProductGroup).where(False)
+                )
+            ).scalars()
+        )
+        for item_key, group in generic_groups.items():
+            if group.family not in _AMOUNT_FULFILLMENT_FAMILIES:
+                compatible_group_keys_by_item_key[item_key].add(item_key)
+                continue
+            for candidate_group in compatible_groups:
+                freshness_matches = (
+                    ("frozen" in group.key and "frozen" in candidate_group.key)
+                    or ("fresh" in group.key and "fresh" in candidate_group.key)
+                    or ("frozen" not in group.key and "fresh" not in group.key)
+                )
+                if group.family == candidate_group.family and freshness_matches:
+                    compatible_group_keys_by_item_key[item_key].add(candidate_group.key)
+            compatible_group_keys_by_item_key[item_key].add(item_key)
+        candidate_group_keys = sorted(
+            {key for keys in compatible_group_keys_by_item_key.values() for key in keys}
+        )
         rows = (
             await session.execute(
                 select(GenericProductGroupMember.group_key, CatalogOffer)
@@ -1240,14 +1705,25 @@ async def compare_shopping_list(
                         CatalogOffer.product_id == GenericProductGroupMember.product_id,
                     ),
                 )
-                .where(GenericProductGroupMember.group_key.in_(generic_keys))
+                .where(GenericProductGroupMember.group_key.in_(candidate_group_keys))
                 .where(CatalogOffer.is_active.is_(True))
                 .where(CatalogOffer.chain.in_(ACTIVE_CHAIN_KEYS))
             )
         ).all()
         for group_key, offer in rows:
-            offers_by_store_group[(offer.chain, offer.store_id, group_key)].append(offer)
+            for item_key, compatible_keys in compatible_group_keys_by_item_key.items():
+                if group_key in compatible_keys:
+                    offers_by_store_group[(offer.chain, offer.store_id, item_key)].append(offer)
             stores_by_chain[offer.chain][offer.store_id] = offer.store_name
+
+        if _catalog_debug_enabled():
+            logger.debug(
+                "compare_generic_offers list_id=%s generic_keys=%s rows=%s candidate_stores=%s",
+                shopping_list.id,
+                generic_keys,
+                len(rows),
+                sum(len(stores) for stores in stores_by_chain.values()),
+            )
 
     chain_results: list[dict[str, Any]] = []
     for chain_key in ACTIVE_CHAIN_KEYS:
@@ -1298,6 +1774,11 @@ async def compare_shopping_list(
                             "regular_unit_price": None,
                             "line_total": None,
                             "regular_line_total": None,
+                            "purchased_quantity": None,
+                            "purchased_quantity_si": None,
+                            "package_count": None,
+                            "package_size_label": None,
+                            "fulfillment_description": None,
                             "deal_applied": False,
                             "deal_description": None,
                             "image_url": image_url,
@@ -1306,7 +1787,16 @@ async def compare_shopping_list(
                     )
                     continue
 
-                offer, totals = _choose_best_offer_for_quantity(candidates, item.quantity)
+                fulfillment_family = (
+                    generic_groups.get(item.generic_group_key).family
+                    if item.generic_group_key and generic_groups.get(item.generic_group_key)
+                    else None
+                )
+                offer, totals = _choose_best_offer_for_quantity(
+                    candidates,
+                    item.quantity,
+                    fulfillment_family=fulfillment_family,
+                )
                 total_price += totals["line_total"]
                 regular_total_price += totals["regular_line_total"]
                 if totals["deal_applied"]:
@@ -1323,6 +1813,11 @@ async def compare_shopping_list(
                         "regular_unit_price": totals["regular_unit_price"],
                         "line_total": totals["line_total"],
                         "regular_line_total": totals["regular_line_total"],
+                        "purchased_quantity": totals["purchased_quantity"],
+                        "purchased_quantity_si": totals["purchased_quantity_si"],
+                        "package_count": totals["package_count"],
+                        "package_size_label": totals["package_size_label"],
+                        "fulfillment_description": totals["fulfillment_description"],
                         "deal_applied": totals["deal_applied"],
                         "deal_description": totals["deal_description"],
                         "image_url": offer.image_url or image_url,
@@ -1343,6 +1838,20 @@ async def compare_shopping_list(
                 "applied_deals_count": applied_deals_count,
                 "items": line_items,
             }
+            if _catalog_debug_enabled():
+                logger.debug(
+                    "compare_store list_id=%s chain=%s store_id=%s store_name=%r total=%.2f regular_total=%.2f complete=%s missing=%s missing_products=%s found_items=%s",
+                    shopping_list.id,
+                    chain_key,
+                    store_id,
+                    store_name,
+                    store_result["total_price"],
+                    store_result["regular_total_price"],
+                    store_result["complete"],
+                    store_result["missing_count"],
+                    missing_products,
+                    sum(1 for line_item in line_items if line_item["found"]),
+                )
             ranking_key = (len(missing_products), store_result["total_price"])
             if ranking_key < best_store_key:
                 best_store_result = store_result
@@ -1358,6 +1867,18 @@ async def compare_shopping_list(
             result["total_price"],
         )
     )
+    if _catalog_debug_enabled():
+        logger.debug(
+            "compare_done list_id=%s results=%s best=%s",
+            shopping_list.id,
+            len(chain_results),
+            {
+                key: chain_results[0].get(key)
+                for key in ("chain", "store_id", "total_price", "complete", "missing_count")
+            }
+            if chain_results
+            else None,
+        )
     return {
         "list_id": shopping_list.id,
         "list_name": shopping_list.name,

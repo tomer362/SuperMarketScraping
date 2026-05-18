@@ -1,39 +1,45 @@
 import { useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { getProductDetail } from '../api';
+import { getGenericGroupDetail } from '../api';
 import ListPickerDialog from '../components/ListPickerDialog';
 import { formatComparisonUnit, formatCurrency } from '../lib/format';
 
-export default function ProductPage() {
-  const { productId } = useParams();
+function routeGroupKey(value: string | undefined): string {
+  if (!value) {
+    return '';
+  }
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+export default function GroupPage() {
+  const { groupKey: groupKeyParam } = useParams();
   const [searchParams] = useSearchParams();
+  const groupKey = routeGroupKey(groupKeyParam);
   const [dialogOpen, setDialogOpen] = useState(false);
 
-  const productQuery = useQuery({
-    queryKey: ['product', productId],
-    queryFn: () => getProductDetail(Number(productId)),
-    enabled: Boolean(productId),
+  const groupQuery = useQuery({
+    queryKey: ['generic-group', groupKey],
+    queryFn: () => getGenericGroupDetail(groupKey),
+    enabled: groupKey.length > 0,
   });
 
-  if (productQuery.isLoading) {
-    return <PageState text="טוען פרטי מוצר..." />;
+  if (groupQuery.isLoading) {
+    return <PageState text="טוען קבוצת השוואה..." />;
   }
 
-  if (!productQuery.data) {
-    return <PageState text="לא מצאנו את המוצר הזה." />;
+  if (!groupQuery.data) {
+    return <PageState text="לא מצאנו את קבוצת ההשוואה הזו." />;
   }
 
-  const product = productQuery.data;
+  const group = groupQuery.data;
   const requestedQuantity = Number(searchParams.get('qty') ?? 1);
   const requestedDimension = searchParams.get('dim');
-  const defaultQuantity =
-    Number.isFinite(requestedQuantity)
-    && requestedQuantity > 0
-    && (requestedDimension === 'count' || (product.is_weighable && requestedDimension === product.unit_dimension))
-      ? requestedQuantity
-      : 1;
-  const defaultQuantityDimension = defaultQuantity === 1 ? null : requestedDimension;
+  const defaultQuantity = Number.isFinite(requestedQuantity) && requestedQuantity > 0 ? requestedQuantity : 1;
 
   return (
     <>
@@ -42,21 +48,21 @@ export default function ProductPage() {
           <div className="rounded-[34px] border border-white/80 bg-white/95 p-5 shadow-[0_20px_60px_-36px_rgba(15,23,42,0.35)] sm:p-6">
             <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
               <div className="flex gap-4">
-                <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-[26px] bg-slate-100">
-                  {product.image_url ? (
-                    <img src={product.image_url} alt={product.name} className="h-full w-full object-contain" />
+                <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-[26px] bg-emerald-50">
+                  {group.offers[0]?.image_url ? (
+                    <img src={group.offers[0].image_url} alt={group.label} className="h-full w-full object-contain" />
                   ) : (
                     <span className="text-4xl">🛒</span>
                   )}
                 </div>
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-600">Exact product</p>
-                  <h2 className="mt-2 text-2xl font-black text-slate-900 sm:text-3xl">{product.name}</h2>
-                  <p className="mt-2 text-sm text-slate-500">
-                    {product.brand ? `${product.brand} · ` : ''}
-                    {product.unit_description ?? 'מוצר להשוואת מחירים'}
+                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-700">
+                    Comparable group
                   </p>
-                  {product.barcode && <p className="mt-1 text-xs text-slate-400">ברקוד: {product.barcode}</p>}
+                  <h2 className="mt-2 text-2xl font-black text-slate-900 sm:text-3xl">{group.label}</h2>
+                  <p className="mt-2 text-sm text-slate-500">
+                    השוואה לפי סוג וגודל זהים, עם מותג גמיש רק בקטגוריות שאושרו לכך.
+                  </p>
                 </div>
               </div>
 
@@ -72,14 +78,16 @@ export default function ProductPage() {
             <div className="mt-5 rounded-[28px] bg-slate-950 px-5 py-4 text-white shadow-lg shadow-slate-900/20">
               <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-300">המחיר הנמוך כעת</p>
               <div className="mt-2 flex flex-wrap items-end justify-between gap-3">
-                <p className="text-4xl font-black text-sky-300">{formatCurrency(product.cheapest_price)}</p>
-                <p className="text-sm text-slate-300">{product.chain_count} רשתות זמינות להשוואה</p>
+                <p className="text-4xl font-black text-emerald-300">{formatCurrency(group.cheapest_price ?? null)}</p>
+                <p className="text-sm text-slate-300">
+                  {group.chain_count} רשתות · {group.offer_count} הצעות תואמות
+                </p>
               </div>
             </div>
           </div>
 
           <div className="space-y-3">
-            {product.offers.map((offer, index) => (
+            {group.offers.map((offer, index) => (
               <article
                 key={offer.chain}
                 className={`rounded-[30px] border px-5 py-4 shadow-sm ${
@@ -131,20 +139,20 @@ export default function ProductPage() {
 
         <aside className="space-y-4">
           <div className="rounded-[34px] border border-white/80 bg-white/95 p-5 shadow-sm">
-            <p className="text-sm font-black text-slate-900">מה אפשר לעשות כאן?</p>
+            <p className="text-sm font-black text-slate-900">מה מושווה כאן?</p>
             <ul className="mt-3 space-y-3 text-sm leading-6 text-slate-500">
-              <li>בדוק/י באיזו רשת המוצר הזה הכי זול עכשיו.</li>
-              <li>הוסף/י אותו לרשימה אחת או ליותר.</li>
-              <li>השתמש/י בהשוואת סל כדי למצוא את הסניף הזול ביותר לכל רשת.</li>
+              <li>כל שורה היא ההצעה הזולה ביותר באותה רשת עבור הקבוצה הזו.</li>
+              <li>שם המוצר שמופיע בכל רשת הוא המוצר שהמערכת התאימה בפועל.</li>
+              <li>הוספה לרשימה תאפשר להשוות סל מלא עם אותו מוצר כללי.</li>
             </ul>
           </div>
         </aside>
       </div>
 
       <ListPickerDialog
-        product={product}
+        group={group}
         defaultQuantity={defaultQuantity}
-        defaultQuantityDimension={defaultQuantityDimension}
+        defaultQuantityDimension={requestedDimension}
         isOpen={dialogOpen}
         onClose={() => setDialogOpen(false)}
       />

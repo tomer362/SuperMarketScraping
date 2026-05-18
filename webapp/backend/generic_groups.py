@@ -156,7 +156,7 @@ def classify_generic_offer(offer: Any) -> GenericGroup | None:
         key = f"{family}|" + "|".join(flags)
         return GenericGroup(key=key, family=family, label=label)
 
-    if is_weighable and unit_dimension == "mass":
+    if unit_dimension == "mass":
         for family, label in (("chicken", "עוף"), ("salmon", "סלמון"), ("ground_beef", "בשר טחון")):
             if family == "chicken" and "עוף" not in name:
                 continue
@@ -165,7 +165,17 @@ def classify_generic_offer(offer: Any) -> GenericGroup | None:
             if family == "ground_beef" and not ("בשר טחון" in name or "טחון בקר" in name):
                 continue
             frozen = "קפוא" in name
-            key = f"{family}|weight|{'frozen' if frozen else 'fresh'}"
-            return GenericGroup(key=key, family=family, label=f"{label} במשקל {'קפוא' if frozen else 'טרי'}")
+            freshness = "frozen" if frozen else "fresh"
+            freshness_label = "קפוא" if frozen else "טרי"
+            if is_weighable:
+                key = f"{family}|weight|{freshness}"
+                return GenericGroup(key=key, family=family, label=f"{label} במשקל {freshness_label}")
+            if qty:
+                key = f"{family}|packaged|{freshness}|qty:{qty}"
+                return GenericGroup(
+                    key=key,
+                    family=family,
+                    label=f"{label} ארוז {_size_label(unit_dimension, qty)} {freshness_label}",
+                )
 
     return None

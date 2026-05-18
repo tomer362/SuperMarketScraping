@@ -2,10 +2,16 @@ import { Link } from 'react-router-dom';
 import type { ProductPreview } from '../types';
 import { formatCurrency } from '../lib/format';
 
-export default function ProductPreviewCard({ product }: { product: ProductPreview }) {
+export default function ProductPreviewCard({
+  product,
+  detailParams = '',
+}: {
+  product: ProductPreview;
+  detailParams?: string;
+}) {
   return (
     <Link
-      to={`/products/${product.id}`}
+      to={`/products/${product.id}${detailParams}`}
       className="group flex min-h-32 gap-4 rounded-[28px] border border-white/80 bg-white/90 p-4 shadow-[0_18px_45px_-28px_rgba(15,23,42,0.25)] transition hover:-translate-y-0.5 hover:shadow-[0_26px_60px_-28px_rgba(14,165,233,0.35)]"
     >
       <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[22px] bg-slate-100">

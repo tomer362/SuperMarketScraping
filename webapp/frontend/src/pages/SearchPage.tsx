@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getChains, searchProducts } from '../api';
 import { resolvePreferredChains, subscribePreferredChainsChange } from '../app/chainPreferences';
-import ListPickerDialog from '../components/ListPickerDialog';
 import ProductPreviewCard from '../components/ProductPreviewCard';
 import SearchAutocomplete from '../components/SearchAutocomplete';
 import { formatCurrency } from '../lib/format';
-import type { GenericProductGroup } from '../types';
+import { parseSearchQuantity } from '../lib/queryQuantity';
 
 function useDebouncedValue<T>(value: T, delay: number) {
   const [debouncedValue, setDebouncedValue] = useState(value);
@@ -20,13 +19,28 @@ function useDebouncedValue<T>(value: T, delay: number) {
   return debouncedValue;
 }
 
+const SEARCH_SCROLL_KEY = 'supermarket.search.scrollY';
+
 export default function SearchPage() {
   const navigate = useNavigate();
-  const [query, setQuery] = useState('');
-  const [submittedQuery, setSubmittedQuery] = useState('');
-  const [offset, setOffset] = useState(0);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialQuery = searchParams.get('q') ?? '';
+  const initialOffset = Number(searchParams.get('offset') ?? 0);
+  const [query, setQuery] = useState(initialQuery);
+  const [submittedQuery, setSubmittedQuery] = useState(initialQuery);
+  const [offset, setOffset] = useState(Number.isFinite(initialOffset) && initialOffset > 0 ? initialOffset : 0);
   const [selectedChains, setSelectedChains] = useState<string[]>([]);
-  const [selectedGenericGroup, setSelectedGenericGroup] = useState<GenericProductGroup | null>(null);
+  const [autocompleteHiddenForQuery, setAutocompleteHiddenForQuery] = useState<string | null>(null);
+
+  useEffect(() => {
+    const savedScrollY = Number(window.sessionStorage.getItem(SEARCH_SCROLL_KEY) ?? 0);
+    if (Number.isFinite(savedScrollY) && savedScrollY > 0) {
+      window.requestAnimationFrame(() => window.scrollTo({ top: savedScrollY }));
+    }
+    return () => {
+      window.sessionStorage.setItem(SEARCH_SCROLL_KEY, String(window.scrollY));
+    };
+  }, []);
 
   const chainsQuery = useQuery({ queryKey: ['chains'], queryFn: getChains });
   const activeChains = useMemo(
@@ -47,21 +61,44 @@ export default function SearchPage() {
     return subscribePreferredChainsChange(syncSelection);
   }, [activeChains]);
 
-  const selectedChainLabels = useMemo(() => {
-    const byKey = new Map(activeChains.map((chain) => [chain.chain, chain.label]));
-    return selectedChains.map((key) => byKey.get(key) ?? key);
-  }, [activeChains, selectedChains]);
-
   const debouncedQuery = useDebouncedValue(query, 250);
-  const readyForSearch = submittedQuery.trim().length >= 3;
+  const trimmedQuery = query.trim();
+  const parsedCurrentQuery = parseSearchQuantity(query);
+  const parsedSubmittedQuery = parseSearchQuantity(submittedQuery);
+  const searchQueryText = parsedSubmittedQuery.cleanedQuery;
+  const quantityParams = parsedSubmittedQuery.quantity
+    ? `?qty=${encodeURIComponent(String(parsedSubmittedQuery.quantity.value))}&dim=${encodeURIComponent(parsedSubmittedQuery.quantity.dimension)}`
+    : '';
+  const currentQuantityParams = parsedCurrentQuery.quantity
+    ? `?qty=${encodeURIComponent(String(parsedCurrentQuery.quantity.value))}&dim=${encodeURIComponent(parsedCurrentQuery.quantity.dimension)}`
+    : '';
+  const showAutocomplete = autocompleteHiddenForQuery !== debouncedQuery.trim();
+  const readyForSearch = searchQueryText.trim().length >= 3;
 
   useEffect(() => {
-    setOffset(0);
-  }, [submittedQuery]);
+    const nextQuery = searchParams.get('q') ?? '';
+    const nextOffsetRaw = Number(searchParams.get('offset') ?? 0);
+    const nextOffset = Number.isFinite(nextOffsetRaw) && nextOffsetRaw > 0 ? nextOffsetRaw : 0;
+
+    setQuery(nextQuery);
+    setSubmittedQuery(nextQuery);
+    setOffset(nextOffset);
+  }, [searchParams]);
+
+  const updateSearchUrl = (nextQuery: string, nextOffset: number) => {
+    const nextParams = new URLSearchParams();
+    if (nextQuery) {
+      nextParams.set('q', nextQuery);
+    }
+    if (nextOffset > 0) {
+      nextParams.set('offset', String(nextOffset));
+    }
+    setSearchParams(nextParams, { replace: true });
+  };
 
   const resultsQuery = useQuery({
-    queryKey: ['product-search', submittedQuery, offset, selectedChains.join(',')],
-    queryFn: () => searchProducts(submittedQuery, 20, offset, selectedChains),
+    queryKey: ['product-search', searchQueryText, offset, selectedChains.join(',')],
+    queryFn: () => searchProducts(searchQueryText, 20, offset, selectedChains),
     enabled: readyForSearch,
   });
 
@@ -86,7 +123,7 @@ export default function SearchPage() {
                 כתבו לפחות 3 תווים כדי לקבל הצעות. לחיצה על חיפוש תציג את כל המוצרים התואמים עם המחיר הזול ביותר לכל מוצר.
               </p>
               <p className="mt-2 text-sm text-slate-500">
-                סינון רשתות פעיל מתוך הגדרות: {selectedChainLabels.length.toLocaleString('he-IL')}
+                סינון רשתות פעיל מתוך הגדרות: {selectedChains.length.toLocaleString('he-IL')}
               </p>
             </div>
           </div>
@@ -95,14 +132,26 @@ export default function SearchPage() {
             className="mt-5 space-y-3"
             onSubmit={(event) => {
               event.preventDefault();
-              setSubmittedQuery(query.trim());
+              const nextQuery = query.trim();
+              setSubmittedQuery(nextQuery);
+              setOffset(0);
+              setAutocompleteHiddenForQuery(nextQuery);
+              updateSearchUrl(nextQuery, 0);
             }}
           >
             <div className="flex flex-col gap-3 sm:flex-row">
               <input
                 type="search"
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setAutocompleteHiddenForQuery(null);
+                }}
+                onFocus={() => {
+                  if (trimmedQuery !== autocompleteHiddenForQuery) {
+                    setAutocompleteHiddenForQuery(null);
+                  }
+                }}
                 placeholder="למשל: חלב, ביצים, קוטג׳"
                 className="min-h-14 flex-1 rounded-[24px] border border-slate-200 bg-slate-50 px-5 text-base outline-none transition focus:border-sky-300 focus:bg-white"
               />
@@ -120,20 +169,15 @@ export default function SearchPage() {
               </p>
             )}
 
-            <SearchAutocomplete
-              query={debouncedQuery}
-              chains={selectedChains}
-              onSelect={(productId) => navigate(`/products/${productId}`)}
-            />
-
-            {selectedChainLabels.length > 0 && (
-              <div className="flex flex-wrap gap-2 pt-1">
-                {selectedChainLabels.map((label) => (
-                  <span key={label} className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
-                    {label}
-                  </span>
-                ))}
-              </div>
+            {showAutocomplete && (
+              <SearchAutocomplete
+                query={parseSearchQuantity(debouncedQuery).cleanedQuery}
+                chains={selectedChains}
+                onSelect={(productId) => {
+                  setAutocompleteHiddenForQuery(query.trim());
+                  navigate(`/products/${productId}${currentQuantityParams}`);
+                }}
+              />
             )}
           </form>
         </div>
@@ -172,7 +216,7 @@ export default function SearchPage() {
                     <button
                       key={group.key}
                       type="button"
-                      onClick={() => setSelectedGenericGroup(group)}
+                      onClick={() => navigate(`/groups/${encodeURIComponent(group.key)}${quantityParams}`)}
                       className="rounded-[24px] border border-white bg-white/95 p-4 text-right shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
                     >
                       <p className="text-base font-black text-slate-900">{group.label}</p>
@@ -181,7 +225,7 @@ export default function SearchPage() {
                       </p>
                       <div className="mt-3 flex items-end justify-between gap-3">
                         <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-700">
-                          הוסף/י כרכיב כללי
+                          השווה מחירים
                         </span>
                         <span className="text-lg font-black text-emerald-700">
                           {group.cheapest_price != null ? formatCurrency(group.cheapest_price) : 'מחיר משתנה'}
@@ -200,7 +244,7 @@ export default function SearchPage() {
             ) : (
               <div className="grid gap-4 xl:grid-cols-2">
                 {resultsQuery.data.products.map((product) => (
-                  <ProductPreviewCard key={product.id} product={product} />
+                  <ProductPreviewCard key={product.id} product={product} detailParams={quantityParams} />
                 ))}
               </div>
             )}
@@ -209,7 +253,11 @@ export default function SearchPage() {
               <div className="flex items-center justify-center gap-3 rounded-full bg-white/95 px-4 py-3 shadow-sm">
                 <button
                   type="button"
-                  onClick={() => setOffset((value) => Math.max(0, value - 20))}
+                  onClick={() => {
+                    const nextOffset = Math.max(0, offset - 20);
+                    setOffset(nextOffset);
+                    updateSearchUrl(submittedQuery, nextOffset);
+                  }}
                   disabled={offset === 0}
                   className="rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-40"
                 >
@@ -220,7 +268,11 @@ export default function SearchPage() {
                 </span>
                 <button
                   type="button"
-                  onClick={() => setOffset((value) => value + 20)}
+                  onClick={() => {
+                    const nextOffset = offset + 20;
+                    setOffset(nextOffset);
+                    updateSearchUrl(submittedQuery, nextOffset);
+                  }}
                   disabled={Math.floor(offset / 20) + 1 >= totalPages}
                   className="rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-40"
                 >
@@ -256,11 +308,6 @@ export default function SearchPage() {
         </div>
       </aside>
     </div>
-    <ListPickerDialog
-      group={selectedGenericGroup ?? undefined}
-      isOpen={selectedGenericGroup !== null}
-      onClose={() => setSelectedGenericGroup(null)}
-    />
     </>
   );
 }

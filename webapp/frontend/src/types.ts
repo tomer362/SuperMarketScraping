@@ -95,6 +95,12 @@ export interface ChainOffer {
   regular_price: number;
   sale_price?: number | null;
   discount_percent?: number | null;
+  is_weighable?: boolean | null;
+  unit_description?: string | null;
+  unit_of_measure?: string | null;
+  unit_qty?: number | null;
+  unit_qty_si?: number | null;
+  unit_dimension?: string | null;
   price_per_base_unit?: number | null;
   brand?: string | null;
   image_url?: string | null;
@@ -117,6 +123,10 @@ export interface ProductDetail {
   is_weighable: boolean;
   cheapest_price: number;
   chain_count: number;
+  offers: ChainOffer[];
+}
+
+export interface GenericProductGroupDetail extends GenericProductGroup {
   offers: ChainOffer[];
 }
 
@@ -150,6 +160,11 @@ export interface BasketComparisonLine {
   regular_unit_price?: number | null;
   line_total?: number | null;
   regular_line_total?: number | null;
+  purchased_quantity?: number | null;
+  purchased_quantity_si?: number | null;
+  package_count?: number | null;
+  package_size_label?: string | null;
+  fulfillment_description?: string | null;
   deal_applied: boolean;
   deal_description?: string | null;
   image_url?: string | null;
@@ -181,6 +196,7 @@ export interface ShoppingListComparison {
 export interface RefreshRun {
   run_id: number;
   source: string;
+  refresh_kind: string;
   status: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -194,9 +210,17 @@ export interface CatalogStatus {
   scheduler_running: boolean;
   refresh_in_progress: boolean;
   interval_hours: number;
+  price_interval_hours: number;
+  deals_interval_hours: number;
   catalog_fresh: boolean;
+  prices_fresh: boolean;
+  deals_fresh: boolean;
   last_refresh?: RefreshRun | null;
   last_successful_refresh?: RefreshRun | null;
+  last_price_refresh?: RefreshRun | null;
+  last_successful_price_refresh?: RefreshRun | null;
+  last_deals_refresh?: RefreshRun | null;
+  last_successful_deals_refresh?: RefreshRun | null;
   chains: ChainInfo[];
 }
 

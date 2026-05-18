@@ -112,6 +112,12 @@ class ChainOfferOut(BaseModel):
     regular_price: float
     sale_price: float | None = None
     discount_percent: float | None = None
+    is_weighable: bool = False
+    unit_description: str | None = None
+    unit_of_measure: str | None = None
+    unit_qty: float | None = None
+    unit_qty_si: float | None = None
+    unit_dimension: str | None = None
     price_per_base_unit: float | None = None
     brand: str | None = None
     image_url: str | None = None
@@ -134,6 +140,10 @@ class ProductDetailOut(BaseModel):
     is_weighable: bool = False
     cheapest_price: float
     chain_count: int
+    offers: list[ChainOfferOut]
+
+
+class GenericProductGroupDetailOut(GenericProductGroupOut):
     offers: list[ChainOfferOut]
 
 
@@ -185,6 +195,11 @@ class BasketComparisonLineOut(BaseModel):
     regular_unit_price: float | None = None
     line_total: float | None = None
     regular_line_total: float | None = None
+    purchased_quantity: float | None = None
+    purchased_quantity_si: float | None = None
+    package_count: int | None = None
+    package_size_label: str | None = None
+    fulfillment_description: str | None = None
     deal_applied: bool = False
     deal_description: str | None = None
     image_url: str | None = None
@@ -216,6 +231,7 @@ class ShoppingListComparisonOut(BaseModel):
 class RefreshRunOut(BaseModel):
     run_id: int
     source: str
+    refresh_kind: str = "prices"
     status: str
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -229,9 +245,17 @@ class CatalogStatusOut(BaseModel):
     scheduler_running: bool
     refresh_in_progress: bool
     interval_hours: float
+    price_interval_hours: float
+    deals_interval_hours: float
     catalog_fresh: bool
+    prices_fresh: bool
+    deals_fresh: bool
     last_refresh: RefreshRunOut | None = None
     last_successful_refresh: RefreshRunOut | None = None
+    last_price_refresh: RefreshRunOut | None = None
+    last_successful_price_refresh: RefreshRunOut | None = None
+    last_deals_refresh: RefreshRunOut | None = None
+    last_successful_deals_refresh: RefreshRunOut | None = None
     chains: list[ChainOut]
 
 
